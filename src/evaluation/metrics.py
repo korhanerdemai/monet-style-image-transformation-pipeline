@@ -1,0 +1,412 @@
+"""
+src/evaluation/metrics.py
+=========================
+Memorization-informed Fréchet Inception Distance (MiFID) — PyTorch implementation.
+
+MiFID Formula
+-------------
+    MiFID = FID / (cosine_thresholded + ε)
+
+    where FID = ||μ₁-μ₂||² + Tr(Σ₁+Σ₂-2√(Σ₁Σ₂))
+    and cosine_thresholded = cosine_distance  if < eps  else 1.0
+
+Public API
+----------
+    InceptionV3FeatureExtractor  — nn.Module wrapping pretrained InceptionV3
+    get_activations(...)          — batch-safe pool_3 feature extraction
+    calculate_activation_statistics(...)
+    calculate_frechet_distance(...)
+    cosine_distance(...)
+    distance_thresholding(...)
+    calculate_mifid(...)          — primary entry point, returns dict
+"""
+
+from __future__ import annotations
+
+import gc
+import warnings
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+from scipy import linalg
+from torchvision import models, transforms
+from tqdm import tqdm
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+INCEPTION_OUTPUT_DIM: int = 2048
+COSINE_DISTANCE_EPS: float = 0.1
+FID_EPSILON: float = 1e-15
+
+
+# ---------------------------------------------------------------------------
+# InceptionV3 feature extractor
+# ---------------------------------------------------------------------------
+
+class InceptionV3FeatureExtractor(nn.Module):
+    """Returns pool_3 (2048-d) features from pretrained InceptionV3.
+
+    The final FC layer is replaced with ``nn.Identity`` so the forward pass
+    returns the flattened avgpool activations — equivalent to the
+    ``pool_3:0`` tensor the reference notebook extracted from the frozen TF graph.
+
+    Parameters
+    ----------
+    device : torch.device
+        Device to load the model weights onto.
+    """
+
+    def __init__(self, device: torch.device) -> None:
+        super().__init__()
+        # torchvision ≥0.13 raises ValueError if aux_logits=False is passed to
+        # the constructor while using pretrained weights — it forces aux_logits=True
+        # at construction time. Load with defaults, then disable the aux branch.
+        inception = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
+        # Disable auxiliary classifier post-hoc (safe in eval mode)
+        inception.aux_logits = False
+        inception.AuxLogits = None
+        # Replace the final classifier with Identity to expose pool_3 (2048-d) features
+        inception.fc = nn.Identity()
+        inception.eval()
+        self.model = inception.to(device)
+        self.device = device
+        # ImageNet normalisation expected by torchvision InceptionV3
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract pool_3 (2048-d) features.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Float32, shape ``(N, 3, H, W)``, values in ``[0, 1]``.
+            H, W must be ≥ 75 (256 for Monet images).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(N, 2048)``.
+        """
+        x = self.normalize(x)
+        out = self.model(x)
+        # In training mode inception_v3 may return InceptionOutputs(logits, aux).
+        # In eval mode (our case) it returns a plain tensor — guard anyway.
+        if hasattr(out, "logits"):
+            out = out.logits
+        # Squeeze any residual spatial dims
+        while out.ndim > 2:
+            out = out.squeeze(-1)
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Internal helper
+# ---------------------------------------------------------------------------
+
+def _to_tensor(images: np.ndarray, device: torch.device) -> torch.Tensor:
+    """Convert numpy NHWC uint8/float image batch to NCHW float32 [0,1] tensor."""
+    arr = images.astype(np.float32)
+    if arr.max() > 1.0 + 1e-6:
+        arr /= 255.0
+    return torch.from_numpy(arr).permute(0, 3, 1, 2).to(device)
+
+
+# ---------------------------------------------------------------------------
+# Activation extraction
+# ---------------------------------------------------------------------------
+
+def get_activations(
+    images: np.ndarray,
+    extractor: InceptionV3FeatureExtractor,
+    batch_size: int = 32,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Compute InceptionV3 pool_3 activations for an image array.
+
+    Mirrors ``get_activations`` from the reference notebook but uses PyTorch.
+
+    Parameters
+    ----------
+    images : np.ndarray
+        Shape ``(N, H, W, 3)``. uint8 ``[0,255]`` or float32 ``[0,1]``.
+    extractor : InceptionV3FeatureExtractor
+        Pre-built extractor (avoids reloading weights per call).
+    batch_size : int
+        Images per forward pass. Reduce on low-VRAM GPUs.
+    verbose : bool
+        Show tqdm progress bar.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(N, 2048)``, float32.
+    """
+    n = images.shape[0]
+    batch_size = min(batch_size, n)
+    n_batches = (n + batch_size - 1) // batch_size
+    pred = np.empty((n, INCEPTION_OUTPUT_DIM), dtype=np.float32)
+
+    itr = tqdm(range(n_batches), desc="InceptionV3 features", unit="batch") if verbose else range(n_batches)
+
+    for i in itr:
+        s, e = i * batch_size, min((i + 1) * batch_size, n)
+        t = _to_tensor(images[s:e], extractor.device)
+        with torch.no_grad():
+            f = extractor(t)
+        pred[s:e] = f.cpu().numpy()
+        del t, f
+        if extractor.device.type == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    return pred
+
+
+def calculate_activation_statistics(
+    images: np.ndarray,
+    extractor: InceptionV3FeatureExtractor,
+    batch_size: int = 32,
+    verbose: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute mean, covariance, and raw feature matrix of InceptionV3 activations.
+
+    Parameters
+    ----------
+    images : np.ndarray
+        Shape ``(N, H, W, 3)``.
+    extractor : InceptionV3FeatureExtractor
+    batch_size : int
+    verbose : bool
+
+    Returns
+    -------
+    mu : np.ndarray, shape (2048,)
+    sigma : np.ndarray, shape (2048, 2048)
+    features : np.ndarray, shape (N, 2048)
+        Raw feature vectors retained for memorization distance computation.
+    """
+    features = get_activations(images, extractor, batch_size=batch_size, verbose=verbose)
+    mu = np.mean(features, axis=0)
+    sigma = np.cov(features, rowvar=False)
+    return mu, sigma, features
+
+
+# ---------------------------------------------------------------------------
+# Fréchet Distance
+# ---------------------------------------------------------------------------
+
+def calculate_frechet_distance(
+    mu1: np.ndarray,
+    sigma1: np.ndarray,
+    mu2: np.ndarray,
+    sigma2: np.ndarray,
+    eps: float = 1e-6,
+) -> float:
+    """Fréchet Distance between two multivariate Gaussians (Sutherland stable version).
+
+    FD = ||μ₁-μ₂||² + Tr(Σ₁ + Σ₂ - 2·√(Σ₁·Σ₂))
+
+    Parameters
+    ----------
+    mu1, mu2 : np.ndarray, shape (2048,)
+    sigma1, sigma2 : np.ndarray, shape (2048, 2048)
+    eps : float
+        Diagonal offset added when matrix product is near-singular.
+
+    Returns
+    -------
+    float
+        Fréchet distance (lower = better quality).
+    """
+    mu1, mu2 = np.atleast_1d(mu1), np.atleast_1d(mu2)
+    sigma1, sigma2 = np.atleast_2d(sigma1), np.atleast_2d(sigma2)
+
+    if mu1.shape != mu2.shape:
+        raise ValueError(f"Mean shape mismatch: {mu1.shape} vs {mu2.shape}")
+    if sigma1.shape != sigma2.shape:
+        raise ValueError(f"Covariance shape mismatch: {sigma1.shape} vs {sigma2.shape}")
+
+    diff = mu1 - mu2
+    covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
+
+    if not np.isfinite(covmean).all():
+        warnings.warn(f"Singular covariance product; adding eps={eps} to diagonal.")
+        offset = np.eye(sigma1.shape[0]) * eps
+        covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+
+    if np.iscomplexobj(covmean):
+        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+            raise ValueError(f"Large imaginary component: {np.max(np.abs(covmean.imag))}")
+        covmean = covmean.real
+
+    return float(diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2.0 * np.trace(covmean))
+
+
+# ---------------------------------------------------------------------------
+# Memorization distance
+# ---------------------------------------------------------------------------
+
+def normalize_rows(x: np.ndarray) -> np.ndarray:
+    """L2-normalise each row. Zero rows stay zero (no NaN produced)."""
+    return np.nan_to_num(x / np.linalg.norm(x, ord=2, axis=1, keepdims=True))
+
+
+def cosine_distance(features1: np.ndarray, features2: np.ndarray) -> float:
+    """Mean minimum cosine distance — the memorization component of MiFID.
+
+    For each generated image, finds its nearest reference image in cosine
+    space. Low values (~0) indicate memorization; high values (~1) indicate
+    diversity.
+
+    Parameters
+    ----------
+    features1 : np.ndarray, shape (N, 2048)  — generated
+    features2 : np.ndarray, shape (M, 2048)  — reference
+
+    Returns
+    -------
+    float in [0, 1]
+    """
+    f1 = features1[np.sum(features1, axis=1) != 0]
+    f2 = features2[np.sum(features2, axis=1) != 0]
+    nf1 = normalize_rows(f1)
+    nf2 = normalize_rows(f2)
+    d = 1.0 - np.abs(np.matmul(nf1, nf2.T))   # (N, M) cosine distance matrix
+    return float(np.mean(np.min(d, axis=1)))
+
+
+def distance_thresholding(d: float, eps: float = COSINE_DISTANCE_EPS) -> float:
+    """Clamp memorization distance: values >= eps become 1.0 (no penalty).
+
+    Parameters
+    ----------
+    d : float  — raw cosine distance
+    eps : float — threshold (default 0.1)
+
+    Returns
+    -------
+    float
+    """
+    return d if d < eps else 1.0
+
+
+# ---------------------------------------------------------------------------
+# Top-level MiFID entry point
+# ---------------------------------------------------------------------------
+
+def calculate_mifid(
+    generated_images: np.ndarray,
+    reference_images: np.ndarray,
+    batch_size: int = 32,
+    device: Optional[str] = None,
+    cosine_eps: float = COSINE_DISTANCE_EPS,
+    fid_epsilon: float = FID_EPSILON,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    """Compute the full MiFID score.
+
+    MiFID = FID / (distance_thresholded + fid_epsilon)
+
+    Parameters
+    ----------
+    generated_images : np.ndarray
+        Shape ``(N, H, W, 3)``. Stylized / generated images.
+        Values: uint8 [0,255] or float32 [0,1]. H, W ≥ 75 (256 for Monet).
+    reference_images : np.ndarray
+        Shape ``(M, H, W, 3)``. Real reference images (Monet paintings).
+    batch_size : int
+        InceptionV3 forward-pass batch size.
+    device : str or None
+        ``"cuda"`` / ``"cpu"``. Auto-detected if None.
+    cosine_eps : float
+        Memorization threshold (default 0.1).
+    fid_epsilon : float
+        Denominator stabiliser (default 1e-15).
+    verbose : bool
+        Print progress and intermediate values.
+
+    Returns
+    -------
+    dict
+        Keys: ``fid``, ``cosine_distance``, ``cosine_thresholded``, ``mifid``.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = torch.device(device)
+
+    if verbose:
+        print(f"[MiFID] device={dev}  generated={generated_images.shape}  reference={reference_images.shape}")
+
+    extractor = InceptionV3FeatureExtractor(dev)
+
+    if verbose:
+        print("[MiFID] Computing statistics for generated images …")
+    mu1, sigma1, feat1 = calculate_activation_statistics(
+        generated_images, extractor, batch_size=batch_size, verbose=verbose
+    )
+
+    if verbose:
+        print("[MiFID] Computing statistics for reference images …")
+    mu2, sigma2, feat2 = calculate_activation_statistics(
+        reference_images, extractor, batch_size=batch_size, verbose=verbose
+    )
+
+    fid_val = calculate_frechet_distance(mu1, sigma1, mu2, sigma2)
+    dist_raw = cosine_distance(feat1, feat2)
+    dist_thr = distance_thresholding(dist_raw, eps=cosine_eps)
+    mifid = fid_val / (dist_thr + fid_epsilon)
+
+    if verbose:
+        print(f"[MiFID] FID={fid_val:.4f}  cos_raw={dist_raw:.6f}  "
+              f"cos_thr={dist_thr:.6f}  MiFID={mifid:.4f}")
+
+    return {
+        "fid": float(fid_val),
+        "cosine_distance": float(dist_raw),
+        "cosine_thresholded": float(dist_thr),
+        "mifid": float(mifid),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI helper
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+    import pathlib
+    from PIL import Image
+
+    parser = argparse.ArgumentParser(description="Compute MiFID between two image directories.")
+    parser.add_argument("generated_dir", help="Generated images directory.")
+    parser.add_argument("reference_dir", help="Reference images directory.")
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--image_size", type=int, default=256)
+    parser.add_argument("--device", default=None)
+    args = parser.parse_args()
+
+    def _load(d: str, sz: int) -> np.ndarray:
+        p = pathlib.Path(d)
+        files = sorted(p.glob("*.jpg")) + sorted(p.glob("*.png"))
+        return np.stack([
+            np.array(Image.open(f).convert("RGB").resize((sz, sz), Image.LANCZOS))
+            for f in files
+        ])
+
+    res = calculate_mifid(
+        _load(args.generated_dir, args.image_size),
+        _load(args.reference_dir, args.image_size),
+        batch_size=args.batch_size,
+        device=args.device,
+    )
+    print("\n=== MiFID Results ===")
+    for k, v in res.items():
+        print(f"  {k:25s}: {v:.6f}")

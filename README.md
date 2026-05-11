@@ -9,13 +9,18 @@ monet-style-image-transformation-pipeline/
 ├── data/
 │   ├── raw/               # DVC-tracked raw dataset (monet_dataset/)
 │   └── processed/         # Processed / cached outputs
+├── metrics/               # Persisted evaluation results (JSON)
 ├── models/                # Saved model checkpoints
 ├── notebooks/             # Exploratory notebooks
-│   └── cyclegan-implementation.ipynb
+│   ├── cyclegan-implementation.ipynb
 ├── src/
 │   ├── data/
-│   │   └── data_loader.py # Modular PyTorch data pipeline
-│   └── models/            # Model architecture modules (Phase 2)
+│   │   └── data_loader.py          # Modular PyTorch data pipeline
+│   ├── evaluation/
+│   │   ├── metrics.py              # MiFID metric (PyTorch / InceptionV3)
+│   │   └── evaluate_baseline.py   # End-to-end baseline evaluation script
+│   └── models/
+│       └── baseline_nst.py        # VGG-19 Neural Style Transfer baseline
 ├── tests/                 # Unit tests
 ├── pyproject.toml         # Project dependencies (uv)
 └── README.md
@@ -45,19 +50,67 @@ dm.setup("fit")
 loader = dm.train_dataloader()
 ```
 
+### 4. Run the NST baseline evaluation
+
+```bash
+# Quick smoke test (5 photos, 50 steps)
+uv run python -m src.evaluation.evaluate_baseline --n_photos 5 --nst_steps 50 --quiet
+
+# Full baseline run (50 photos, 150 steps)
+uv run python -m src.evaluation.evaluate_baseline --n_photos 50 --nst_steps 150
+```
+
+Results are printed to the console and saved to `metrics/baseline_metrics.json`.
+
+### 5. Stylize a single image (NST)
+
+```bash
+uv run python -m src.models.baseline_nst \
+    --content data/raw/monet_dataset/photo_jpg/<photo>.jpg \
+    --style   data/raw/monet_dataset/monet_jpg/<painting>.jpg \
+    --output  stylized.jpg --steps 150
+```
+
+### 6. Compute MiFID between two directories
+
+```bash
+uv run python -m src.evaluation.metrics <generated_dir> <reference_dir> --batch_size 32
+```
+
 ## Phases
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | **1** | ✅ Complete | Environment & Data Infrastructure |
-| **2** | 🔜 Planned  | Model Architecture & Training |
+| **2** | ✅ Complete | Baseline & Metrics (NST + MiFID) |
 | **3** | 🔜 Planned  | Experiment Tracking (MLflow/W&B) |
 | **4** | 🔜 Planned  | Containerized Deployment |
+
+## Evaluation
+
+### Baseline — Neural Style Transfer (VGG-19)
+
+The Phase 2 baseline uses Gatys et al. (2015) Neural Style Transfer via a frozen
+VGG-19 feature extractor and L-BFGS optimisation. Default: **150 iterations per image**.
+
+### Metric — MiFID
+
+**Memorization-informed Fréchet Inception Distance** (MiFID) is the primary quality metric:
+
+```
+MiFID = FID / (cosine_memorization_distance + ε)
+```
+
+- **FID** measures distributional similarity between generated and real Monet features
+  (InceptionV3 pool_3, 2048-d).
+- **Cosine memorization distance** penalises generators that copy the training set;
+  distances ≥ 0.1 are clamped to 1.0 (no penalty).
+- Lower MiFID = better. A memorizing generator gets a very small denominator → score explodes.
 
 ## Data Versioning (DVC)
 
 Raw data is tracked by DVC. The `.dvc` files are committed to git; actual image data
-lives in the configured DVC remote.
+lives in the configured DVC remote (`D:\dvc-storage` by default).
 
 ```bash
 dvc status          # Check if data is in sync
