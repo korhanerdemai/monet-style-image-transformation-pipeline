@@ -1,6 +1,6 @@
 """
-src/models/baseline_nst.py
-==========================
+monet_pipeline/models/baseline_nst.py
+=====================================
 Neural Style Transfer (NST) baseline for the Monet CycleGAN MLOps pipeline.
 
 Algorithm
@@ -19,14 +19,14 @@ baseline evaluation over ~50-100 images completes in minutes on a GPU.
 Usage
 -----
 Command-line (single image):
-    python -m src.models.baseline_nst \
+    python commands.py baseline \
         --content path/to/photo.jpg \
         --style   path/to/monet.jpg \
         --output  path/to/result.jpg \
         --steps   150
 
 From Python:
-    from src.models.baseline_nst import NeuralStyleTransfer
+    from monet_pipeline.models.baseline_nst import NeuralStyleTransfer
     nst = NeuralStyleTransfer()
     result_tensor = nst.transfer(content_img_tensor, style_img_tensor, steps=150)
 """
@@ -34,7 +34,8 @@ From Python:
 from __future__ import annotations
 
 import copy
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple, cast
 
 import torch
 import torch.nn as nn
@@ -56,6 +57,7 @@ STYLE_LAYERS_DEFAULT: List[str] = ["conv_1", "conv_2", "conv_3", "conv_4", "conv
 # ---------------------------------------------------------------------------
 # Loss modules
 # ---------------------------------------------------------------------------
+
 
 class ContentLoss(nn.Module):
     """Holds the target content feature map and computes MSE loss against it.
@@ -90,6 +92,9 @@ class StyleLoss(nn.Module):
 class Normalization(nn.Module):
     """ImageNet normalisation as an nn.Module (inserted at the start of the model)."""
 
+    mean: torch.Tensor
+    std: torch.Tensor
+
     def __init__(self, device: torch.device) -> None:
         super().__init__()
         mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(3, 1, 1)
@@ -104,6 +109,7 @@ class Normalization(nn.Module):
 # ---------------------------------------------------------------------------
 # Gram matrix
 # ---------------------------------------------------------------------------
+
 
 def _gram_matrix(x: torch.Tensor) -> torch.Tensor:
     """Compute the Gram matrix of a feature map.
@@ -125,6 +131,7 @@ def _gram_matrix(x: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 # Build instrumented VGG-19
 # ---------------------------------------------------------------------------
+
 
 def _build_model(
     cnn: nn.Module,
@@ -154,7 +161,7 @@ def _build_model(
             name = f"conv_{conv_idx}"
         elif isinstance(layer, nn.ReLU):
             name = f"relu_{conv_idx}"
-            layer = nn.ReLU(inplace=False)   # inplace=True breaks gradient flow
+            layer = nn.ReLU(inplace=False)  # inplace=True breaks gradient flow
         elif isinstance(layer, nn.MaxPool2d):
             # Replace MaxPool with AvgPool — produces smoother stylization
             name = f"pool_{conv_idx}"
@@ -189,6 +196,7 @@ def _build_model(
 # ---------------------------------------------------------------------------
 # Main NST class
 # ---------------------------------------------------------------------------
+
 
 class NeuralStyleTransfer:
     """VGG-19 based Neural Style Transfer baseline.
@@ -233,24 +241,26 @@ class NeuralStyleTransfer:
             p.requires_grad_(False)
         self._cnn = vgg
 
-        self._transform = transforms.Compose([
-            transforms.Resize((image_size, image_size), antialias=True),
-            transforms.ToTensor(),
-        ])
+        self._transform = transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size), antialias=True),
+                transforms.ToTensor(),
+            ]
+        )
 
     # ------------------------------------------------------------------
     # Image I/O helpers
     # ------------------------------------------------------------------
 
-    def load_image(self, path: str) -> torch.Tensor:
+    def load_image(self, path: str | Path) -> torch.Tensor:
         """Load a JPEG/PNG from disk and return a (1,3,H,W) tensor in [0,1]."""
         img = Image.open(path).convert("RGB")
-        return self._transform(img).unsqueeze(0).to(self.device)
+        return cast(torch.Tensor, self._transform(img).unsqueeze(0).to(self.device))
 
     def tensor_to_pil(self, tensor: torch.Tensor) -> Image.Image:
         """Convert a (1,3,H,W) or (3,H,W) [0,1] tensor to a PIL Image."""
         t = tensor.squeeze(0).detach().cpu().clamp(0, 1)
-        return transforms.ToPILImage()(t)
+        return cast(Image.Image, transforms.ToPILImage()(t))
 
     # ------------------------------------------------------------------
     # Core transfer
@@ -307,12 +317,12 @@ class NeuralStyleTransfer:
                 output.clamp_(0, 1)
 
             optimizer.zero_grad()
-            model(output)   # forward populates .loss in each hook
+            model(output)  # forward populates .loss in each hook
 
-            c_loss = self.content_weight * sum(cl.loss for cl in content_losses)
-            s_loss = self.style_weight * sum(sl.loss for sl in style_losses)
+            c_loss = self.content_weight * torch.stack([cl.loss for cl in content_losses]).sum()
+            s_loss = self.style_weight * torch.stack([sl.loss for sl in style_losses]).sum()
             total = c_loss + s_loss
-            total.backward()
+            total.backward()  # type: ignore[no-untyped-call]
 
             step[0] += 1
             if print_every and step[0] % print_every == 0:
@@ -323,11 +333,11 @@ class NeuralStyleTransfer:
                     f"total={total.item():.4f}"
                 )
             # Return a plain float — L-BFGS expects a scalar, not a tensor
-            return total.item()
+            return float(total.item())
 
         # L-BFGS needs to re-evaluate the function multiple times per step
         while step[0] < steps:
-            optimizer.step(closure)
+            optimizer.step(closure)  # type: ignore[no-untyped-call]
 
         with torch.no_grad():
             output.clamp_(0, 1)
@@ -339,10 +349,11 @@ class NeuralStyleTransfer:
 # Convenience function (single call, path-based)
 # ---------------------------------------------------------------------------
 
+
 def run_nst(
-    content_path: str,
-    style_path: str,
-    output_path: Optional[str] = None,
+    content_path: str | Path,
+    style_path: str | Path,
+    output_path: Optional[str | Path] = None,
     steps: int = 150,
     image_size: int = 256,
     device: Optional[str] = None,
@@ -353,11 +364,11 @@ def run_nst(
 
     Parameters
     ----------
-    content_path : str
+    content_path : str or Path
         Path to the landscape photo.
-    style_path : str
+    style_path : str or Path
         Path to the Monet painting.
-    output_path : str or None
+    output_path : str or Path or None
         If provided, saves the result as a JPEG.
     steps : int
         Optimisation iterations. Default: 150.
@@ -372,9 +383,7 @@ def run_nst(
     -------
     torch.Tensor, shape (1, 3, H, W), values in [0, 1]
     """
-    nst = NeuralStyleTransfer(
-        image_size=image_size, device=device, style_weight=style_weight
-    )
+    nst = NeuralStyleTransfer(image_size=image_size, device=device, style_weight=style_weight)
     content = nst.load_image(content_path)
     style = nst.load_image(style_path)
 
@@ -386,31 +395,3 @@ def run_nst(
         print(f"Saved stylized image to {output_path}")
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Neural Style Transfer baseline.")
-    parser.add_argument("--content", required=True, help="Content image path.")
-    parser.add_argument("--style", required=True, help="Style image path.")
-    parser.add_argument("--output", default="stylized.jpg", help="Output path.")
-    parser.add_argument("--steps", type=int, default=150)
-    parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--style_weight", type=float, default=1e6)
-    parser.add_argument("--device", default=None)
-    args = parser.parse_args()
-
-    run_nst(
-        content_path=args.content,
-        style_path=args.style,
-        output_path=args.output,
-        steps=args.steps,
-        image_size=args.image_size,
-        device=args.device,
-        style_weight=args.style_weight,
-    )
