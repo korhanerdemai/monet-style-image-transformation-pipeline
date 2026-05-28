@@ -40,6 +40,7 @@ import glob
 import os
 from typing import List, Optional
 
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision.io import read_image
@@ -195,12 +196,15 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     Parameters
     ----------
-    monet_dir : str
-        Glob pattern for Monet JPEG files,
-        e.g. ``"data/raw/monet_dataset/monet_jpg/*.jpg"``.
-    photo_dir : str
-        Glob pattern for landscape photo JPEG files,
-        e.g. ``"data/raw/monet_dataset/photo_jpg/*.jpg"``.
+    train_manifest : str
+        Path to the training CSV manifest file.
+        Default: ``"data/processed/train_manifest.csv"``.
+    val_manifest : str
+        Path to the validation CSV manifest file.
+        Default: ``"data/processed/val_manifest.csv"``.
+    test_manifest : str
+        Path to the test CSV manifest file.
+        Default: ``"data/processed/test_manifest.csv"``.
     batch_size : int
         Number of images per training batch. Default: 1.
     sample_size : int
@@ -218,8 +222,9 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     def __init__(
         self,
-        monet_dir: str,
-        photo_dir: str,
+        train_manifest: str = "data/processed/train_manifest.csv",
+        val_manifest: str = "data/processed/val_manifest.csv",
+        test_manifest: str = "data/processed/test_manifest.csv",
         batch_size: int = DEFAULT_BATCH_SIZE,
         sample_size: int = DEFAULT_SAMPLE_SIZE,
         load_dim: int = DEFAULT_LOAD_DIM,
@@ -230,17 +235,11 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         _require_lightning()
         super().__init__()
 
+        self.train_manifest = train_manifest
+        self.val_manifest = val_manifest
+        self.test_manifest = test_manifest
         self.batch_size = batch_size
         self.sample_size = sample_size
-
-        # Resolve file lists eagerly so we can fail fast on bad paths
-        self.monet_filenames: List[str] = sorted(glob.glob(monet_dir))
-        self.photo_filenames: List[str] = sorted(glob.glob(photo_dir))
-
-        if not self.monet_filenames:
-            raise FileNotFoundError(f"No Monet images found matching: {monet_dir!r}")
-        if not self.photo_filenames:
-            raise FileNotFoundError(f"No photo images found matching: {photo_dir!r}")
 
         self.transform = CustomTransform(load_dim=load_dim, target_dim=target_dim)
 
@@ -255,13 +254,37 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     def setup(self, stage: Optional[str] = None) -> None:
         """Instantiate dataset splits for the given ``stage``."""
-        if stage == "fit":
-            self.train_monet = CustomDataset(self.monet_filenames, self.transform, stage="fit")
-            self.train_photo = CustomDataset(self.photo_filenames, self.transform, stage="fit")
+        if stage == "fit" or stage is None:
+            # Eagerly load manifest files to fail-fast
+            if not os.path.exists(self.train_manifest):
+                raise FileNotFoundError(f"Train manifest not found: {self.train_manifest}")
+            if not os.path.exists(self.val_manifest):
+                raise FileNotFoundError(f"Val manifest not found: {self.val_manifest}")
 
-        if stage in ("fit", "test", "predict", None):
-            # Eval/validation dataset — no augmentation
-            self.valid_photo = CustomDataset(self.photo_filenames, self.transform, stage=None)
+            train_df = pd.read_csv(self.train_manifest)
+            train_monet_paths = train_df[train_df["domain"] == "monet"]["image_path"].tolist()
+            train_photo_paths = train_df[train_df["domain"] == "photo"]["image_path"].tolist()
+
+            self.train_monet = CustomDataset(train_monet_paths, self.transform, stage="fit")
+            self.train_photo = CustomDataset(train_photo_paths, self.transform, stage="fit")
+
+            val_df = pd.read_csv(self.val_manifest)
+            val_photo_paths = val_df[val_df["domain"] == "photo"]["image_path"].tolist()
+            self.valid_photo = CustomDataset(val_photo_paths, self.transform, stage=None)
+
+        if stage == "test":
+            if not os.path.exists(self.test_manifest):
+                raise FileNotFoundError(f"Test manifest not found: {self.test_manifest}")
+            test_df = pd.read_csv(self.test_manifest)
+            test_photo_paths = test_df[test_df["domain"] == "photo"]["image_path"].tolist()
+            self.test_photo = CustomDataset(test_photo_paths, self.transform, stage=None)
+
+        if stage == "predict":
+            if not os.path.exists(self.test_manifest):
+                raise FileNotFoundError(f"Test manifest not found: {self.test_manifest}")
+            test_df = pd.read_csv(self.test_manifest)
+            test_photo_paths = test_df[test_df["domain"] == "photo"]["image_path"].tolist()
+            self.predict_photo = CustomDataset(test_photo_paths, self.transform, stage=None)
 
     # ------------------------------------------------------------------
     # DataLoaders
@@ -288,13 +311,23 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         )
 
     def test_dataloader(self) -> DataLoader:
-        """Alias for ``val_dataloader``."""
-        return self.val_dataloader()
+        """Return test DataLoader."""
+        dataset = getattr(self, "test_photo", getattr(self, "valid_photo", None))
+        if dataset is None:
+            raise RuntimeError("Dataset for testing is not initialized. Run setup('test').")
+        return DataLoader(
+            dataset,
+            batch_size=self.sample_size,
+            **self._loader_config,
+        )
 
     def predict_dataloader(self) -> DataLoader:
         """Return prediction DataLoader (single-image batches for inference)."""
+        dataset = getattr(self, "predict_photo", getattr(self, "valid_photo", None))
+        if dataset is None:
+            raise RuntimeError("Dataset for prediction is not initialized. Run setup('predict').")
         return DataLoader(
-            self.valid_photo,
+            dataset,
             batch_size=self.batch_size,
             **self._loader_config,
         )
@@ -306,24 +339,24 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
     @classmethod
     def from_data_root(
         cls,
-        data_root: str = "data/raw/monet_dataset",
+        data_root: str = "data/processed",
         **kwargs,
     ) -> "CycleGANDataModule":
-        """Construct a ``CycleGANDataModule`` from a standard data root directory.
-
-        Assumes the following layout under ``data_root``::
-
-            monet_dataset/
-            ├── monet_jpg/    ← Monet paintings (*.jpg)
-            └── photo_jpg/    ← Landscape photos  (*.jpg)
+        """Construct a ``CycleGANDataModule`` from a processed data directory containing CSV manifests.
 
         Parameters
         ----------
         data_root : str
-            Path to the dataset root. Default: ``"data/raw/monet_dataset"``.
+            Path to the processed data directory containing manifests. Default: ``"data/processed"``.
         **kwargs
             Forwarded to ``CycleGANDataModule.__init__``.
         """
-        monet_dir = os.path.join(data_root, "monet_jpg", "*.jpg")
-        photo_dir = os.path.join(data_root, "photo_jpg", "*.jpg")
-        return cls(monet_dir=monet_dir, photo_dir=photo_dir, **kwargs)
+        train_manifest = os.path.join(data_root, "train_manifest.csv")
+        val_manifest = os.path.join(data_root, "val_manifest.csv")
+        test_manifest = os.path.join(data_root, "test_manifest.csv")
+        return cls(
+            train_manifest=train_manifest,
+            val_manifest=val_manifest,
+            test_manifest=test_manifest,
+            **kwargs,
+        )
