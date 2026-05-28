@@ -1,15 +1,15 @@
 """
-src/evaluation/evaluate_baseline.py
-====================================
+monet_pipeline/evaluation/evaluate_baseline.py
+==============================================
 Baseline evaluation pipeline for the Monet CycleGAN MLOps project.
 
 Pipeline
 --------
 1. Load a fixed random subset of landscape photos and all Monet paintings
    from ``data/raw/monet_dataset/`` using the Phase 1 data loader.
-2. Run each photo through the NST baseline (src/models/baseline_nst.py).
+2. Run each photo through the NST baseline (monet_pipeline/models/baseline_nst.py).
 3. Compute the MiFID score comparing NST outputs vs. real Monet paintings
-   (src/evaluation/metrics.py).
+   (monet_pipeline/evaluation/metrics.py).
 4. Print the MiFID score to the console and save full results to
    ``metrics/baseline_metrics.json``.
 
@@ -17,11 +17,11 @@ Usage
 -----
 Run from the repository root:
 
-    python -m src.evaluation.evaluate_baseline
+    python -m monet_pipeline.evaluation.evaluate_baseline
 
 Or with CLI flags:
 
-    python -m src.evaluation.evaluate_baseline \\
+    python -m monet_pipeline.evaluation.evaluate_baseline \\
         --data_root data/raw/monet_dataset \\
         --n_photos 50 \\
         --nst_steps 150 \\
@@ -37,46 +37,47 @@ Console                         — live progress + final summary table
 from __future__ import annotations
 
 import argparse
-import glob
 import json
-import os
 import random
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from PIL import Image
 from tqdm import tqdm
+
+from monet_pipeline.evaluation.metrics import calculate_mifid
 
 # ---------------------------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------------------------
-from src.models.baseline_nst import NeuralStyleTransfer
-from src.evaluation.metrics import calculate_mifid
-
+from monet_pipeline.models.baseline_nst import NeuralStyleTransfer
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _collect_files(directory: str, ext: str = "*.jpg") -> List[str]:
+
+def _collect_files(directory: str | Path, ext: str = "*.jpg") -> List[Path]:
     """Glob for image files under ``directory``."""
-    files = sorted(glob.glob(os.path.join(directory, ext)))
+    path = Path(directory)
+    files = sorted(path.glob(ext))
     if not files:
         raise FileNotFoundError(f"No {ext!r} files found in: {directory!r}")
     return files
 
 
-def _load_image_as_numpy(path: str, size: int = 256) -> np.ndarray:
+def _load_image_as_numpy(path: str | Path, size: int = 256) -> NDArray[np.uint8]:
     """Load a JPEG → resize → return uint8 HWC numpy array."""
     img = Image.open(path).convert("RGB")
-    img = img.resize((size, size), Image.LANCZOS)
+    img = img.resize((size, size), Image.Resampling.LANCZOS)
     return np.array(img, dtype=np.uint8)
 
 
-def _tensor_to_numpy_uint8(tensor: torch.Tensor) -> np.ndarray:
+def _tensor_to_numpy_uint8(tensor: torch.Tensor) -> NDArray[np.uint8]:
     """Convert (1, 3, H, W) [0,1] tensor → uint8 HWC numpy array."""
     arr = tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
     return (np.clip(arr, 0, 1) * 255).astype(np.uint8)
@@ -86,8 +87,9 @@ def _tensor_to_numpy_uint8(tensor: torch.Tensor) -> np.ndarray:
 # Main evaluation pipeline
 # ---------------------------------------------------------------------------
 
+
 def evaluate_baseline(
-    data_root: str = "data/raw/monet_dataset",
+    data_root: str | Path = "data/raw/monet_dataset",
     n_photos: int = 50,
     nst_steps: int = 150,
     nst_style_weight: float = 1e6,
@@ -95,14 +97,14 @@ def evaluate_baseline(
     image_size: int = 256,
     device: Optional[str] = None,
     seed: int = 42,
-    output_path: str = "metrics/baseline_metrics.json",
+    output_path: str | Path = "metrics/baseline_metrics.json",
     verbose: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Run the full baseline evaluation and return the metrics dict.
 
     Parameters
     ----------
-    data_root : str
+    data_root : str or Path
         Root of the Monet dataset (contains ``monet_jpg/`` and ``photo_jpg/``).
     n_photos : int
         Number of landscape photos to stylize (sampled deterministically).
@@ -118,7 +120,7 @@ def evaluate_baseline(
         ``"cuda"`` / ``"cpu"``. Auto-detected if None.
     seed : int
         Random seed for reproducible photo sampling.
-    output_path : str
+    output_path : str or Path
         Path to write the JSON results file.
     verbose : bool
         Print progress.
@@ -148,8 +150,9 @@ def evaluate_baseline(
     # ------------------------------------------------------------------ #
     # Step 1 — Collect file paths
     # ------------------------------------------------------------------ #
-    monet_dir = os.path.join(data_root, "monet_jpg")
-    photo_dir = os.path.join(data_root, "photo_jpg")
+    data_root_path = Path(data_root)
+    monet_dir = data_root_path / "monet_jpg"
+    photo_dir = data_root_path / "photo_jpg"
 
     monet_files = _collect_files(monet_dir, "*.jpg")
     photo_files = _collect_files(photo_dir, "*.jpg")
@@ -160,7 +163,7 @@ def evaluate_baseline(
     sampled_photos = random.sample(photo_files, min(n_photos, len(photo_files)))
     # Use one fixed random Monet painting as the style reference for each photo
     style_path = random.choice(monet_files)
-    print(f"[Dataset] Sampled {len(sampled_photos)} photos; style reference: {Path(style_path).name}\n")
+    print(f"[Dataset] Sampled {len(sampled_photos)} photos; style reference: {style_path.name}\n")
 
     # ------------------------------------------------------------------ #
     # Step 2 — Run NST on each photo
@@ -173,7 +176,7 @@ def evaluate_baseline(
     )
     style_tensor = nst_model.load_image(style_path)
 
-    stylized_images: List[np.ndarray] = []
+    stylized_images: List[NDArray[np.uint8]] = []
     nst_start = time.time()
 
     for idx, photo_path in enumerate(tqdm(sampled_photos, desc="NST stylization", unit="img")):
@@ -182,7 +185,7 @@ def evaluate_baseline(
             content_tensor,
             style_tensor,
             steps=nst_steps,
-            print_every=0,   # suppress per-step logs for batch runs
+            print_every=0,  # suppress per-step logs for batch runs
         )
         stylized_images.append(_tensor_to_numpy_uint8(result_tensor))
 
@@ -192,8 +195,10 @@ def evaluate_baseline(
             torch.cuda.empty_cache()
 
     nst_elapsed = time.time() - nst_start
-    print(f"\n[NST] Stylized {len(stylized_images)} images in {nst_elapsed:.1f}s "
-          f"({nst_elapsed/len(stylized_images):.1f}s/img)\n")
+    print(
+        f"\n[NST] Stylized {len(stylized_images)} images in {nst_elapsed:.1f}s "
+        f"({nst_elapsed/len(stylized_images):.1f}s/img)\n"
+    )
 
     # Stack generated images: (N, H, W, 3) uint8
     generated_arr = np.stack(stylized_images, axis=0)
@@ -202,7 +207,7 @@ def evaluate_baseline(
     # Step 3 — Load reference Monet paintings
     # ------------------------------------------------------------------ #
     print("[Reference] Loading Monet paintings for MiFID …")
-    reference_images: List[np.ndarray] = []
+    reference_images: List[NDArray[np.uint8]] = []
     for mp in tqdm(monet_files, desc="Loading Monet paintings", unit="img"):
         reference_images.append(_load_image_as_numpy(mp, size=image_size))
     reference_arr = np.stack(reference_images, axis=0)
@@ -232,8 +237,8 @@ def evaluate_baseline(
             "image_size": image_size,
             "device": str(device),
             "seed": seed,
-            "style_reference": Path(style_path).name,
-            "data_root": data_root,
+            "style_reference": style_path.name,
+            "data_root": str(data_root),
         },
         "timing": {
             "nst_total_seconds": round(nst_elapsed, 2),
@@ -242,8 +247,9 @@ def evaluate_baseline(
         "metrics": mifid_results,
     }
 
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w") as fp:
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w") as fp:
         json.dump(full_results, fp, indent=2)
 
     # ------------------------------------------------------------------ #
@@ -255,7 +261,7 @@ def evaluate_baseline(
     print(f"  Model             : NST (VGG-19, {nst_steps} steps)")
     print(f"  Photos stylized   : {len(sampled_photos)}")
     print(f"  Monet references  : {len(reference_images)}")
-    print(f"  ── Metrics ──────────────────────────────────")
+    print("  ── Metrics ──────────────────────────────────")
     print(f"  FID               : {mifid_results['fid']:.4f}")
     print(f"  Cosine distance   : {mifid_results['cosine_distance']:.6f}")
     print(f"  Cosine thresholded: {mifid_results['cosine_thresholded']:.6f}")
@@ -271,50 +277,45 @@ def evaluate_baseline(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate the NST baseline and compute MiFID vs. Monet paintings.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--data_root", default="data/raw/monet_dataset",
-        help="Dataset root containing monet_jpg/ and photo_jpg/."
+        "--data_root",
+        default="data/raw/monet_dataset",
+        help="Dataset root containing monet_jpg/ and photo_jpg/.",
     )
     parser.add_argument(
-        "--n_photos", type=int, default=50,
-        help="Number of landscape photos to stylize."
+        "--n_photos", type=int, default=50, help="Number of landscape photos to stylize."
     )
     parser.add_argument(
-        "--nst_steps", type=int, default=150,
-        help="NST L-BFGS optimisation steps per image."
+        "--nst_steps", type=int, default=150, help="NST L-BFGS optimisation steps per image."
     )
     parser.add_argument(
-        "--nst_style_weight", type=float, default=1e6,
-        help="Style loss weight for NST."
+        "--nst_style_weight", type=float, default=1e6, help="Style loss weight for NST."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=16,
-        help="InceptionV3 batch size for MiFID."
+        "--batch_size", type=int, default=16, help="InceptionV3 batch size for MiFID."
     )
     parser.add_argument(
-        "--image_size", type=int, default=256,
-        help="Spatial resolution for all images."
+        "--image_size", type=int, default=256, help="Spatial resolution for all images."
     )
     parser.add_argument(
-        "--device", default=None,
-        help="Torch device ('cuda' or 'cpu'). Auto-detected if not set."
+        "--device", default=None, help="Torch device ('cuda' or 'cpu'). Auto-detected if not set."
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed for reproducible photo sampling."
+        "--seed", type=int, default=42, help="Random seed for reproducible photo sampling."
     )
     parser.add_argument(
-        "--output", default="metrics/baseline_metrics.json",
-        help="Path to write the JSON results file."
+        "--output",
+        default="metrics/baseline_metrics.json",
+        help="Path to write the JSON results file.",
     )
     parser.add_argument(
-        "--quiet", action="store_true",
-        help="Suppress verbose InceptionV3 progress output."
+        "--quiet", action="store_true", help="Suppress verbose InceptionV3 progress output."
     )
     return parser.parse_args()
 
