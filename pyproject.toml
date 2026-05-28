@@ -29,6 +29,8 @@ dependencies = [
     # MLOps — data versioning
     "dvc>=3.0.0",
     "pandas>=2.3.3",
+    "hydra-core>=1.3.2",
+    "fire>=0.6.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,9 @@ dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "pre-commit>=3.5.0",
+    "mypy>=1.7.0",
+    "pandas-stubs>=2.1.1.230928",
 ]
 
 [dependency-groups]
@@ -47,14 +52,19 @@ dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "pre-commit>=3.5.0",
+    "mypy>=1.7.0",
+    "pandas-stubs>=2.1.1.230928",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["monet_pipeline"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+
+[tool.ruff.lint]
 select = ["E", "F", "I"]
 
 [tool.black]
