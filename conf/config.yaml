@@ -1,0 +1,5 @@
+baseline_nst:
+  image_size: 256
+  style_weight: 1000000.0
+  steps: 150
+  device: null
