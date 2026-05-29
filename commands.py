@@ -2,22 +2,43 @@
 commands.py
 ===========
 CLI commands for training and running the CycleGAN Monet style transformation pipeline.
-Exposes entry points for training the baseline AdaIN decoder and running fast inference.
+Exposes entry points for training the baseline AdaIN decoder, CycleGAN, and running fast inference.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict, List
 
 import fire
+import matplotlib.pyplot as plt
+import pytorch_lightning as L
 import torch
 import torchvision.transforms as T
+from hydra import compose, initialize
 from PIL import Image
+from pytorch_lightning.loggers import MLFlowLogger
 
 from monet_pipeline.data.data_loader import CycleGANDataModule
 from monet_pipeline.evaluation.evaluate_baseline import evaluate_baseline
 from monet_pipeline.models.baseline_adain import AdaINStyleTransfer, adain
+from monet_pipeline.models.cyclegan import CycleGAN
 from monet_pipeline.models.losses import StyleTransferLoss
+
+
+class MetricTracker(L.Callback):
+    """Callback to collect logged metrics per epoch for robust in-memory plotting."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.epoch_metrics: List[Dict[str, float]] = []
+
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        metrics: Dict[str, float] = {}
+        for k, v in trainer.logged_metrics.items():
+            metrics[k] = float(v.item()) if hasattr(v, "item") else float(v)
+        metrics["epoch"] = trainer.current_epoch + 1
+        self.epoch_metrics.append(metrics)
 
 
 def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None = None) -> None:
@@ -203,11 +224,135 @@ def run_baseline(
     print(f"Stylized output image saved to {output_path_obj}")
 
 
+def train(fast_dev_run: bool | None = None) -> None:
+    """Train the CycleGAN model using PyTorch Lightning, Hydra configuration, and MLflow.
+
+    Parameters
+    ----------
+    fast_dev_run : bool, optional
+        Override the fast_dev_run flag from Hydra configuration. Default: None.
+    """
+    # 1. Load configuration via Hydra Compose API
+    try:
+        initialize(config_path="conf", version_base=None)
+    except ValueError:
+        pass  # Hydra already initialized
+    cfg = compose(config_name="config")
+
+    # Determine fast_dev_run value
+    fdr = cfg.training.fast_dev_run if fast_dev_run is None else fast_dev_run
+
+    print("Starting CycleGAN Training Phase:")
+    print(f"  Generator Name:  {cfg.training.gen_name}")
+    print(f"  ResBlocks:       {cfg.training.num_resblocks}")
+    print(f"  Hidden Channels: {cfg.training.hid_channels}")
+    print(f"  Batch Size:      {cfg.training.batch_size}")
+    print(f"  Learning Rate:   {cfg.training.learning_rate}")
+    print(f"  Max Epochs:      {cfg.training.epochs}")
+    print(f"  Fast Dev Run:    {fdr}")
+
+    # 2. Initialize DataModule using static manifests
+    datamodule = CycleGANDataModule(
+        batch_size=cfg.training.batch_size,
+        num_workers=0,  # Safest default for Windows and multiprocess synchronization
+    )
+
+    # 3. Initialize CycleGAN Lightning Module
+    model = CycleGAN(
+        gen_name=cfg.training.gen_name,
+        num_resblocks=cfg.training.num_resblocks,
+        hid_channels=cfg.training.hid_channels,
+        lr=cfg.training.learning_rate,
+        lambda_idt=cfg.training.lambda_idt,
+        lambda_cycle=tuple(cfg.training.lambda_cycle),
+        buffer_size=cfg.training.buffer_size,
+        num_epochs=cfg.training.epochs,
+        decay_epochs=cfg.training.decay_epochs,
+    )
+
+    # 4. Initialize MLFlow Logger and custom Metric Tracker
+    mlflow_logger = MLFlowLogger(
+        experiment_name="CycleGAN_Monet",
+        save_dir="./mlruns",
+    )
+    metric_tracker = MetricTracker()
+
+    # 5. Initialize Trainer
+    trainer = L.Trainer(
+        max_epochs=cfg.training.epochs,
+        fast_dev_run=fdr,
+        logger=mlflow_logger,
+        callbacks=[metric_tracker],
+        enable_checkpointing=not fdr,
+    )
+
+    # 6. Execute training
+    print("Fitting model with PyTorch Lightning Trainer...")
+    trainer.fit(model, datamodule=datamodule)
+
+    # 7. Post-Training Hook: Retrieve metric history and save plots
+    print("\n--- Executing Post-Training Hook: Generating Plots ---")
+    plots_dir = Path("plots")
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    epoch_metrics = metric_tracker.epoch_metrics
+    if not epoch_metrics:
+        print("Warning: No metrics recorded. Plots will not be generated.")
+        return
+
+    epochs = [m.get("epoch", i + 1) for i, m in enumerate(epoch_metrics)]
+
+    # Plot 1: Training losses
+    plt.figure(figsize=(10, 6))
+    gen_loss = [m.get("gen_loss", 0.0) for m in epoch_metrics]
+    disc_m = [m.get("disc_loss_M", 0.0) for m in epoch_metrics]
+    disc_p = [m.get("disc_loss_P", 0.0) for m in epoch_metrics]
+
+    plt.plot(epochs, gen_loss, label="Generator Loss", color="royalblue", marker="o")
+    plt.plot(epochs, disc_m, label="Discriminator M Loss", color="darkorange", marker="s")
+    plt.plot(epochs, disc_p, label="Discriminator P Loss", color="forestgreen", marker="d")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("CycleGAN Training Losses")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.6)
+
+    loss_plot_path = plots_dir / "training_loss.png"
+    plt.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved training loss plot to: {loss_plot_path.absolute()}")
+
+    # Plot 2: Validation metrics
+    val_epochs = [m["epoch"] for m in epoch_metrics if "val_cycle_loss_P" in m]
+    val_cycle = [m["val_cycle_loss_P"] for m in epoch_metrics if "val_cycle_loss_P" in m]
+    val_gen = [m["val_gen_loss_P"] for m in epoch_metrics if "val_gen_loss_P" in m]
+
+    if val_cycle:
+        plt.figure(figsize=(10, 6))
+        plt.plot(val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x")
+        plt.plot(val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^")
+
+        plt.xlabel("Epoch")
+        plt.ylabel("Metric Value")
+        plt.title("CycleGAN Validation Metrics")
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.6)
+
+        val_plot_path = plots_dir / "validation_metrics.png"
+        plt.savefig(val_plot_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved validation metrics plot to: {val_plot_path.absolute()}")
+
+    print("Post-training plotting hook completed successfully.")
+
+
 if __name__ == "__main__":
     fire.Fire(
         {
             "train_baseline": train_baseline,
             "run_baseline": run_baseline,
             "evaluate_baseline": evaluate_baseline,
+            "train": train,
         }
     )
