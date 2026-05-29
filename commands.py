@@ -15,6 +15,7 @@ import torchvision.transforms as T
 from PIL import Image
 
 from monet_pipeline.data.data_loader import CycleGANDataModule
+from monet_pipeline.evaluation.evaluate_baseline import evaluate_baseline
 from monet_pipeline.models.baseline_adain import AdaINStyleTransfer, adain
 from monet_pipeline.models.losses import StyleTransferLoss
 
@@ -207,5 +208,6 @@ if __name__ == "__main__":
         {
             "train_baseline": train_baseline,
             "run_baseline": run_baseline,
+            "evaluate_baseline": evaluate_baseline,
         }
     )

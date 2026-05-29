@@ -24,8 +24,9 @@ Public API
 from __future__ import annotations
 
 import gc
+import time
 import warnings
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, cast
 
 import numpy as np
 import torch
@@ -393,6 +394,131 @@ def calculate_mifid(
         "cosine_thresholded": float(dist_thr),
         "mifid": float(mifid),
     }
+
+
+# ---------------------------------------------------------------------------
+# Extended Metrics Suite (FID, L1, Latency)
+# ---------------------------------------------------------------------------
+
+
+def calculate_fid(
+    generated_images: NDArray[Any],
+    reference_images: NDArray[Any],
+    batch_size: int = 32,
+    device: Optional[str] = None,
+    verbose: bool = True,
+) -> float:
+    """Compute the standard Fréchet Inception Distance (FID).
+
+    Parameters
+    ----------
+    generated_images : np.ndarray
+        Shape ``(N, H, W, 3)``. Generated / stylized images.
+    reference_images : np.ndarray
+        Shape ``(M, H, W, 3)``. Real reference images.
+    batch_size : int
+        InceptionV3 forward-pass batch size.
+    device : str or None
+        ``"cuda"`` / ``"cpu"``. Auto-detected if None.
+    verbose : bool
+        Print progress.
+
+    Returns
+    -------
+    float
+        Fréchet Inception Distance (lower = better quality).
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dev = torch.device(device)
+
+    extractor = InceptionV3FeatureExtractor(dev)
+
+    if verbose:
+        print("[FID] Computing statistics for generated images …")
+    mu1, sigma1, _ = calculate_activation_statistics(
+        generated_images, extractor, batch_size=batch_size, verbose=verbose
+    )
+
+    if verbose:
+        print("[FID] Computing statistics for reference images …")
+    mu2, sigma2, _ = calculate_activation_statistics(
+        reference_images, extractor, batch_size=batch_size, verbose=verbose
+    )
+
+    fid_val = calculate_frechet_distance(mu1, sigma1, mu2, sigma2)
+    return fid_val
+
+
+def calculate_l1_loss(x: torch.Tensor | NDArray[Any], y: torch.Tensor | NDArray[Any]) -> float:
+    """Calculate the L1 Loss (Mean Absolute Error) between two tensors or arrays.
+
+    Parameters
+    ----------
+    x : torch.Tensor or np.ndarray
+        First tensor/array.
+    y : torch.Tensor or np.ndarray
+        Second tensor/array.
+
+    Returns
+    -------
+    float
+        L1 loss / mean absolute error.
+    """
+    if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor):
+        return float(torch.mean(torch.abs(x - y)).item())
+
+    x_np = np.asarray(x, dtype=np.float32)
+    y_np = np.asarray(y, dtype=np.float32)
+    return float(np.mean(np.abs(x_np - y_np)))
+
+
+T_Callable = TypeVar("T_Callable", bound=Callable[..., Any])
+
+
+class measure_latency:
+    """Context manager and decorator to track execution latency in milliseconds.
+
+    Can be used as a context manager:
+        with measure_latency() as tracker:
+            model(x)
+        print(tracker.latency_ms)
+
+    Or as a decorator:
+        @measure_latency()
+        def run_inference():
+            ...
+    """
+
+    def __init__(self, callback: Callable[[float], None] | None = None) -> None:
+        """Initialize latency measurement wrapper.
+
+        Parameters
+        ----------
+        callback : Callable[[float], None] or None
+            Optional function called with the measured latency in milliseconds on completion.
+        """
+        self.callback = callback
+        self.latency_ms = 0.0
+        self.start = 0.0
+        self.end = 0.0
+
+    def __enter__(self) -> measure_latency:
+        self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.end = time.perf_counter()
+        self.latency_ms = (self.end - self.start) * 1000.0
+        if self.callback is not None:
+            self.callback(self.latency_ms)
+
+    def __call__(self, func: T_Callable) -> T_Callable:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with self:
+                return func(*args, **kwargs)
+
+        return cast(T_Callable, wrapper)
 
 
 # ---------------------------------------------------------------------------
