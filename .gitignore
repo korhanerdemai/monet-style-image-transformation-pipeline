@@ -228,3 +228,9 @@ data/
 /*.bmp
 *.json
 *.ipynb
+
+# MLFlow
+mlruns/
+
+# plot saving
+plots/
