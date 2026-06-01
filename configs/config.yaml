@@ -1,0 +1,6 @@
+defaults:
+  - preprocessing: default
+  - model: cyclegan
+  - training: default
+  - postprocessing: default
+  - _self_

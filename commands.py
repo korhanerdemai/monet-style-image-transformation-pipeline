@@ -67,19 +67,39 @@ def pull_data_dvc() -> None:
             )
 
 
-def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None = None) -> None:
+def train_baseline(
+    epochs: int | None = None,
+    batch_size: int | None = None,
+    max_steps: int | None = None,
+) -> None:
     """Train the AdaIN style transfer baseline decoder.
 
     Parameters
     ----------
-    epochs : int
-        Number of epochs to train. Default: 1.
-    batch_size : int
-        Number of images per batch. Default: 8.
+    epochs : int, optional
+        Number of epochs to train. Default: None.
+    batch_size : int, optional
+        Number of images per batch. Default: None.
     max_steps : int, optional
         Maximum number of steps per epoch (useful for smoke tests). Default: None.
     """
     pull_data_dvc()
+
+    # Load configuration via Hydra Compose API
+    try:
+        initialize(config_path="configs", version_base=None)
+    except ValueError:
+        pass  # Hydra already initialized
+    cfg = compose(config_name="config", overrides=["model=baseline"])
+
+    # Fall back to Hydra values if CLI overrides are not provided
+    epochs_val = epochs if epochs is not None else cfg.training.epochs
+    epochs = epochs_val
+    batch_size_val = batch_size if batch_size is not None else cfg.training.batch_size
+    batch_size = batch_size_val
+    lr_val = cfg.model.decoder_lr
+    style_weight_val = cfg.model.style_weight
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 1. Initialize model and loss module
@@ -88,13 +108,19 @@ def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None =
     model.encoder.eval()
     model.decoder.train()
 
-    criterion = StyleTransferLoss()
+    criterion = StyleTransferLoss(style_weight=style_weight_val)
 
     # 2. Setup Adam optimizer targeting ONLY the decoder weights
-    optimizer = torch.optim.Adam(model.decoder.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.decoder.parameters(), lr=lr_val)
 
     # 3. Setup data loader using static manifest CSV files
-    dm = CycleGANDataModule(batch_size=batch_size, num_workers=0)
+    dm = CycleGANDataModule(
+        batch_size=batch_size_val,
+        load_dim=cfg.preprocessing.load_dim,
+        target_dim=cfg.preprocessing.target_dim,
+        sample_size=cfg.preprocessing.sample_size,
+        num_workers=0,
+    )
     dm.setup("fit")
     train_loader = dm.train_dataloader()
 
@@ -103,12 +129,12 @@ def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None =
     weights_path = weights_dir / "baseline_decoder.pth"
 
     print(f"Starting AdaIN Baseline Training on {device.upper()}:")
-    print(f"  Epochs:      {epochs}")
-    print(f"  Batch Size:  {batch_size}")
+    print(f"  Epochs:      {epochs_val}")
+    print(f"  Batch Size:  {batch_size_val}")
     print("  Optimizer:   Adam (Decoder only)")
     print(f"  Output path: {weights_path}\n")
 
-    for epoch in range(epochs):
+    for epoch in range(epochs_val):
         running_loss = 0.0
         running_content = 0.0
         running_style = 0.0
@@ -198,6 +224,14 @@ def run_baseline(
         Path where the stylized output image will be saved.
     """
     pull_data_dvc()
+
+    # Load configuration via Hydra Compose API
+    try:
+        initialize(config_path="configs", version_base=None)
+    except ValueError:
+        pass  # Hydra already initialized
+    cfg = compose(config_name="config", overrides=["model=baseline"])
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     content_path_obj = Path(content_path)
@@ -222,7 +256,7 @@ def run_baseline(
     # 2. Image loading and transforms
     transform = T.Compose(
         [
-            T.Resize((256, 256)),
+            T.Resize((cfg.preprocessing.target_dim, cfg.preprocessing.target_dim)),
             T.ToTensor(),
         ]
     )
@@ -263,38 +297,53 @@ def train(fast_dev_run: bool | None = None) -> None:
     pull_data_dvc()
     # 1. Load configuration via Hydra Compose API
     try:
-        initialize(config_path="conf", version_base=None)
+        initialize(config_path="configs", version_base=None)
     except ValueError:
         pass  # Hydra already initialized
-    cfg = compose(config_name="config")
+    cfg = compose(config_name="config", overrides=["model=cyclegan"])
 
     # Determine fast_dev_run value
-    fdr = cfg.training.fast_dev_run if fast_dev_run is None else fast_dev_run
+    fdr_raw = cfg.training.fast_dev_run if fast_dev_run is None else fast_dev_run
+    if isinstance(fdr_raw, str):
+        if fdr_raw.lower() in ("true", "1"):
+            fdr: bool | int = True
+        elif fdr_raw.lower() in ("false", "0"):
+            fdr = False
+        else:
+            try:
+                fdr = int(fdr_raw)
+            except ValueError:
+                fdr = False
+    else:
+        fdr = fdr_raw
 
     print("Starting CycleGAN Training Phase:")
-    print(f"  Generator Name:  {cfg.training.gen_name}")
-    print(f"  ResBlocks:       {cfg.training.num_resblocks}")
-    print(f"  Hidden Channels: {cfg.training.hid_channels}")
+    print(f"  Generator Name:  {cfg.model.gen_name}")
+    print(f"  ResBlocks:       {cfg.model.num_resblocks}")
+    print(f"  Hidden Channels: {cfg.model.hid_channels}")
     print(f"  Batch Size:      {cfg.training.batch_size}")
     print(f"  Learning Rate:   {cfg.training.learning_rate}")
     print(f"  Max Epochs:      {cfg.training.epochs}")
     print(f"  Fast Dev Run:    {fdr}")
 
-    # 2. Initialize DataModule using static manifests
+    # 2. Initialize DataModule using static configs
     datamodule = CycleGANDataModule(
         batch_size=cfg.training.batch_size,
+        load_dim=cfg.preprocessing.load_dim,
+        target_dim=cfg.preprocessing.target_dim,
+        sample_size=cfg.preprocessing.sample_size,
         num_workers=0,  # Safest default for Windows and multiprocess synchronization
     )
 
     # 3. Initialize CycleGAN Lightning Module
     model = CycleGAN(
-        gen_name=cfg.training.gen_name,
-        num_resblocks=cfg.training.num_resblocks,
-        hid_channels=cfg.training.hid_channels,
+        gen_name=cfg.model.gen_name,
+        num_resblocks=cfg.model.num_resblocks,
+        hid_channels=cfg.model.hid_channels,
         lr=cfg.training.learning_rate,
-        lambda_idt=cfg.training.lambda_idt,
-        lambda_cycle=tuple(cfg.training.lambda_cycle),
-        buffer_size=cfg.training.buffer_size,
+        lambda_idt=cfg.model.lambda_idt,
+        lambda_cycle=tuple(cfg.model.lambda_cycle),
+        buffer_size=cfg.model.buffer_size,
         num_epochs=cfg.training.epochs,
         decay_epochs=cfg.training.decay_epochs,
     )
@@ -321,7 +370,7 @@ def train(fast_dev_run: bool | None = None) -> None:
 
     # 7. Post-Training Hook: Retrieve metric history and save plots
     print("\n--- Executing Post-Training Hook: Generating Plots ---")
-    plots_dir = Path("plots")
+    plots_dir = Path(cfg.postprocessing.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     epoch_metrics = metric_tracker.epoch_metrics
@@ -332,7 +381,8 @@ def train(fast_dev_run: bool | None = None) -> None:
     epochs = [m.get("epoch", i + 1) for i, m in enumerate(epoch_metrics)]
 
     # Plot 1: Training losses
-    plt.figure(figsize=(10, 6))
+    fig_sz = tuple(cfg.postprocessing.fig_size)
+    plt.figure(figsize=fig_sz)
     gen_loss = [m.get("gen_loss", 0.0) for m in epoch_metrics]
     disc_m = [m.get("disc_loss_M", 0.0) for m in epoch_metrics]
     disc_p = [m.get("disc_loss_P", 0.0) for m in epoch_metrics]
@@ -348,7 +398,7 @@ def train(fast_dev_run: bool | None = None) -> None:
     plt.grid(True, linestyle="--", alpha=0.6)
 
     loss_plot_path = plots_dir / "training_loss.png"
-    plt.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
+    plt.savefig(loss_plot_path, dpi=cfg.postprocessing.dpi, bbox_inches="tight")
     plt.close()
     print(f"Saved training loss plot to: {loss_plot_path.absolute()}")
 
@@ -358,7 +408,7 @@ def train(fast_dev_run: bool | None = None) -> None:
     val_gen = [m["val_gen_loss_P"] for m in epoch_metrics if "val_gen_loss_P" in m]
 
     if val_cycle:
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=fig_sz)
         plt.plot(val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x")
         plt.plot(val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^")
 
@@ -369,7 +419,7 @@ def train(fast_dev_run: bool | None = None) -> None:
         plt.grid(True, linestyle="--", alpha=0.6)
 
         val_plot_path = plots_dir / "validation_metrics.png"
-        plt.savefig(val_plot_path, dpi=150, bbox_inches="tight")
+        plt.savefig(val_plot_path, dpi=cfg.postprocessing.dpi, bbox_inches="tight")
         plt.close()
         print(f"Saved validation metrics plot to: {val_plot_path.absolute()}")
 
