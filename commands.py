@@ -41,6 +41,32 @@ class MetricTracker(L.Callback):
         self.epoch_metrics.append(metrics)
 
 
+def pull_data_dvc() -> None:
+    """Pull the dataset using the DVC Python API (or CLI fallback)."""
+    print("Checking dataset availability and initiating DVC pull...")
+    try:
+        from dvc.repo import Repo
+
+        repo = Repo()
+        print("Running dvc.repo.Repo().pull() to download dataset...")
+        repo.pull()
+        print("DVC Python API pull completed successfully.")
+    except Exception as e:
+        print(f"DVC Python API pull encountered an issue: {e}")
+        print("Attempting DVC CLI fallback...")
+        import subprocess
+
+        try:
+            subprocess.run(["dvc", "pull"], check=True)
+            print("DVC CLI fallback pull completed successfully.")
+        except Exception as cli_err:
+            print(f"DVC CLI fallback failed: {cli_err}")
+            print(
+                "Please ensure your DVC storage is configured and "
+                "you have the required access permissions."
+            )
+
+
 def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None = None) -> None:
     """Train the AdaIN style transfer baseline decoder.
 
@@ -53,6 +79,7 @@ def train_baseline(epochs: int = 1, batch_size: int = 8, max_steps: int | None =
     max_steps : int, optional
         Maximum number of steps per epoch (useful for smoke tests). Default: None.
     """
+    pull_data_dvc()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # 1. Initialize model and loss module
@@ -170,6 +197,7 @@ def run_baseline(
     output_path : str
         Path where the stylized output image will be saved.
     """
+    pull_data_dvc()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     content_path_obj = Path(content_path)
@@ -232,6 +260,7 @@ def train(fast_dev_run: bool | None = None) -> None:
     fast_dev_run : bool, optional
         Override the fast_dev_run flag from Hydra configuration. Default: None.
     """
+    pull_data_dvc()
     # 1. Load configuration via Hydra Compose API
     try:
         initialize(config_path="conf", version_base=None)
