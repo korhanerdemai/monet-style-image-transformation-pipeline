@@ -86,3 +86,7 @@ explicit = true
 torch = { index = "pytorch-cu118" }
 torchvision = { index = "pytorch-cu118" }
 
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+files = ["monet_pipeline", "commands.py"]

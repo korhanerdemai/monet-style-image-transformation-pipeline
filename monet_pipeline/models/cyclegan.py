@@ -7,7 +7,7 @@ Extracted and modularised from notebooks/cyclegan-implementation.ipynb.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pytorch_lightning as L
@@ -49,7 +49,7 @@ class Downsampling(nn.Module):
         lrelu: Optional[bool] = True,
     ) -> None:
         super().__init__()
-        modules_list = [
+        modules_list: List[nn.Module] = [
             nn.Conv2d(
                 in_channels,
                 out_channels,
@@ -69,7 +69,7 @@ class Downsampling(nn.Module):
         self.block = nn.Sequential(*modules_list)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        return cast(torch.Tensor, self.block(x))
 
 
 class Upsampling(nn.Module):
@@ -104,7 +104,7 @@ class Upsampling(nn.Module):
         dropout: bool = False,
     ) -> None:
         super().__init__()
-        modules_list = [
+        modules_list: List[nn.Module] = [
             nn.ConvTranspose2d(
                 in_channels,
                 out_channels,
@@ -122,7 +122,7 @@ class Upsampling(nn.Module):
         self.block = nn.Sequential(*modules_list)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        return cast(torch.Tensor, self.block(x))
 
 
 class ResBlock(nn.Module):
@@ -162,7 +162,7 @@ class ResBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.block(x)
+        return cast(torch.Tensor, x + self.block(x))
 
 
 class UNetGenerator(nn.Module):
@@ -180,25 +180,29 @@ class UNetGenerator(nn.Module):
 
     def __init__(self, hid_channels: int, in_channels: int = 3, out_channels: int = 3) -> None:
         super().__init__()
-        self.downsampling_path = nn.ModuleList([
-            Downsampling(in_channels, hid_channels, norm=False),  # 64
-            Downsampling(hid_channels, hid_channels * 2),          # 128
-            Downsampling(hid_channels * 2, hid_channels * 4),      # 256
-            Downsampling(hid_channels * 4, hid_channels * 8),      # 512
-            Downsampling(hid_channels * 8, hid_channels * 8),      # 512
-            Downsampling(hid_channels * 8, hid_channels * 8),      # 512
-            Downsampling(hid_channels * 8, hid_channels * 8),      # 512
-            Downsampling(hid_channels * 8, hid_channels * 8, norm=False),  # 512
-        ])
-        self.upsampling_path = nn.ModuleList([
-            Upsampling(hid_channels * 8, hid_channels * 8, dropout=True),
-            Upsampling(hid_channels * 16, hid_channels * 8, dropout=True),
-            Upsampling(hid_channels * 16, hid_channels * 8, dropout=True),
-            Upsampling(hid_channels * 16, hid_channels * 8),
-            Upsampling(hid_channels * 16, hid_channels * 4),
-            Upsampling(hid_channels * 8, hid_channels * 2),
-            Upsampling(hid_channels * 4, hid_channels),
-        ])
+        self.downsampling_path = nn.ModuleList(
+            [
+                Downsampling(in_channels, hid_channels, norm=False),  # 64
+                Downsampling(hid_channels, hid_channels * 2),  # 128
+                Downsampling(hid_channels * 2, hid_channels * 4),  # 256
+                Downsampling(hid_channels * 4, hid_channels * 8),  # 512
+                Downsampling(hid_channels * 8, hid_channels * 8),  # 512
+                Downsampling(hid_channels * 8, hid_channels * 8),  # 512
+                Downsampling(hid_channels * 8, hid_channels * 8),  # 512
+                Downsampling(hid_channels * 8, hid_channels * 8, norm=False),  # 512
+            ]
+        )
+        self.upsampling_path = nn.ModuleList(
+            [
+                Upsampling(hid_channels * 8, hid_channels * 8, dropout=True),
+                Upsampling(hid_channels * 16, hid_channels * 8, dropout=True),
+                Upsampling(hid_channels * 16, hid_channels * 8, dropout=True),
+                Upsampling(hid_channels * 16, hid_channels * 8),
+                Upsampling(hid_channels * 16, hid_channels * 4),
+                Upsampling(hid_channels * 8, hid_channels * 2),
+                Upsampling(hid_channels * 4, hid_channels),
+            ]
+        )
         self.feature_block = nn.Sequential(
             nn.ConvTranspose2d(hid_channels * 2, out_channels, kernel_size=4, stride=2, padding=1),
             nn.Tanh(),
@@ -215,7 +219,7 @@ class UNetGenerator(nn.Module):
         for up, skip in zip(self.upsampling_path, skips_rev):
             x = up(x)
             x = torch.cat([x, skip], dim=1)
-        return self.feature_block(x)
+        return cast(torch.Tensor, self.feature_block(x))
 
 
 class ResNetGenerator(nn.Module):
@@ -262,7 +266,7 @@ class ResNetGenerator(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+        return cast(torch.Tensor, self.model(x))
 
 
 def get_gen(
@@ -317,7 +321,7 @@ class Discriminator(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        return cast(torch.Tensor, self.block(x))
 
 
 class ImageBuffer:
@@ -397,7 +401,7 @@ class CycleGAN(L.LightningModule):
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         """Translate photo to Monet-style image."""
-        return self.gen_PM(img)
+        return cast(torch.Tensor, self.gen_PM(img))
 
     def init_weights(self) -> None:
         """Initialise weights with normal distribution."""
@@ -416,12 +420,16 @@ class CycleGAN(L.LightningModule):
             self.init_weights()
             print("Model weights initialized.")
 
-    def get_lr_scheduler(self, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler.LambdaLR:
+    def get_lr_scheduler(
+        self, optimizer: torch.optim.Optimizer
+    ) -> torch.optim.lr_scheduler.LambdaLR:
         """Cosine/Linear learning rate decay scheduler."""
 
         def lr_lambda(epoch: int) -> float:
-            len_decay_phase = self.hparams.num_epochs - self.hparams.decay_epochs + 1.0
-            curr_decay_step = max(0.0, float(epoch - self.hparams.decay_epochs + 1.0))
+            len_decay_phase = (
+                float(self.hparams["num_epochs"]) - float(self.hparams["decay_epochs"]) + 1.0
+            )
+            curr_decay_step = max(0.0, float(epoch - float(self.hparams["decay_epochs"]) + 1.0))
             val = 1.0 - curr_decay_step / len_decay_phase
             return max(0.0, val)
 
@@ -429,8 +437,8 @@ class CycleGAN(L.LightningModule):
 
     def configure_optimizers(self) -> Tuple[List[torch.optim.Optimizer], List[Any]]:
         opt_config = {
-            "lr": self.hparams.lr,
-            "betas": self.hparams.betas,
+            "lr": self.hparams["lr"],
+            "betas": self.hparams["betas"],
         }
         opt_gen = torch.optim.Adam(
             list(self.gen_PM.parameters()) + list(self.gen_MP.parameters()),
@@ -440,7 +448,7 @@ class CycleGAN(L.LightningModule):
             list(self.disc_M.parameters()) + list(self.disc_P.parameters()),
             **opt_config,
         )
-        optimizers = [opt_gen, opt_disc]
+        optimizers: List[torch.optim.Optimizer] = [opt_gen, opt_disc]
         schedulers = [self.get_lr_scheduler(opt) for opt in optimizers]
         return optimizers, schedulers
 
@@ -455,23 +463,36 @@ class CycleGAN(L.LightningModule):
         real_labels = torch.ones_like(fake_hat)
         return self.adv_criterion(fake_hat, real_labels)
 
-    def get_idt_loss(self, real: torch.Tensor, idt: torch.Tensor, lambda_cycle: float) -> torch.Tensor:
+    def get_idt_loss(
+        self, real: torch.Tensor, idt: torch.Tensor, lambda_cycle: float
+    ) -> torch.Tensor:
         idt_loss = self.recon_criterion(idt, real)
-        return self.hparams.lambda_idt * lambda_cycle * idt_loss
+        return float(self.hparams["lambda_idt"]) * lambda_cycle * idt_loss
 
-    def get_cycle_loss(self, real: torch.Tensor, recon: torch.Tensor, lambda_cycle: float) -> torch.Tensor:
+    def get_cycle_loss(
+        self, real: torch.Tensor, recon: torch.Tensor, lambda_cycle: float
+    ) -> torch.Tensor:
         cycle_loss = self.recon_criterion(recon, real)
         return lambda_cycle * cycle_loss
 
     def get_gen_loss(self) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Calculate the total generator loss and dictionary of component losses."""
+        assert self.fake_M is not None
+        assert self.fake_P is not None
+        assert self.real_M is not None
+        assert self.real_P is not None
+        assert self.idt_M is not None
+        assert self.idt_P is not None
+        assert self.recon_M is not None
+        assert self.recon_P is not None
+
         # adversarial loss
         adv_loss_PM = self.get_adv_loss(self.fake_M, self.disc_M)
         adv_loss_MP = self.get_adv_loss(self.fake_P, self.disc_P)
         total_adv_loss = adv_loss_PM + adv_loss_MP
 
         # identity loss
-        lambda_cycle = self.hparams.lambda_cycle
+        lambda_cycle = self.hparams["lambda_cycle"]
         idt_loss_MM = self.get_idt_loss(self.real_M, self.idt_M, lambda_cycle[0])
         idt_loss_PP = self.get_idt_loss(self.real_P, self.idt_P, lambda_cycle[1])
         total_idt_loss = idt_loss_MM + idt_loss_PP
@@ -498,7 +519,9 @@ class CycleGAN(L.LightningModule):
         }
         return gen_loss, loss_dict
 
-    def get_disc_loss(self, real: torch.Tensor, fake: torch.Tensor, disc: nn.Module) -> torch.Tensor:
+    def get_disc_loss(
+        self, real: torch.Tensor, fake: torch.Tensor, disc: nn.Module
+    ) -> torch.Tensor:
         # loss on real images
         real_hat = disc(real)
         real_labels = torch.ones_like(real_hat)
@@ -532,7 +555,7 @@ class CycleGAN(L.LightningModule):
 
         self.real_M = batch_dict["monet"]
         self.real_P = batch_dict["photo"]
-        opt_gen, opt_disc = self.optimizers()
+        opt_gen, opt_disc = cast(Tuple[Any, Any], self.optimizers())
 
         # generate fake images
         self.fake_M = self.gen_PM(self.real_P)
@@ -595,12 +618,17 @@ class CycleGAN(L.LightningModule):
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_train_epoch_start(self) -> None:
-        curr_lr = self.lr_schedulers()[0].get_last_lr()[0]
+        schedulers = cast(Any, self.lr_schedulers())
+        curr_lr = schedulers[0].get_last_lr()[0]
         self.log("lr", curr_lr, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_train_epoch_end(self) -> None:
-        for sch in self.lr_schedulers():
-            sch.step()
+        schedulers = cast(Any, self.lr_schedulers())
+        if isinstance(schedulers, list):
+            for sch in schedulers:
+                sch.step()
+        elif schedulers is not None:
+            schedulers.step()
 
         logged_values = self.trainer.progress_bar_metrics
         # Print progress in pure ASCII to avoid terminal encoding errors

@@ -79,12 +79,12 @@ uv run python -m src.evaluation.metrics <generated_dir> <reference_dir> --batch_
 
 ## Phases
 
-| Phase | Status | Description |
-|-------|--------|-------------|
+| Phase | Status      | Description                       |
+| ----- | ----------- | --------------------------------- |
 | **1** | ✅ Complete | Environment & Data Infrastructure |
-| **2** | ✅ Complete | Baseline & Metrics (NST + MiFID) |
-| **3** | 🔜 Planned  | Experiment Tracking (MLflow/W&B) |
-| **4** | 🔜 Planned  | Containerized Deployment |
+| **2** | ✅ Complete | Baseline & Metrics (NST + MiFID)  |
+| **3** | 🔜 Planned  | Experiment Tracking (MLflow/W&B)  |
+| **4** | 🔜 Planned  | Containerized Deployment          |
 
 ## Evaluation
 
