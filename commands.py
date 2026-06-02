@@ -8,7 +8,7 @@ Exposes entry points for training the baseline AdaIN decoder, CycleGAN, and runn
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import fire
 import matplotlib.pyplot as plt
@@ -65,6 +65,48 @@ def pull_data_dvc() -> None:
                 "Please ensure your DVC storage is configured and "
                 "you have the required access permissions."
             )
+
+
+def get_git_commit_id() -> str:
+    """Retrieve the current Git commit hash, returning 'unknown' if not available."""
+    import subprocess
+
+    try:
+        commit_hash = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode("utf-8")
+            .strip()
+        )
+        return commit_hash
+    except Exception:
+        return "unknown"
+
+
+def is_mlflow_server_running(tracking_uri: str) -> bool:
+    """Check if the MLflow tracking server is reachable at host/port of tracking_uri."""
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(tracking_uri)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 80
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except Exception:
+        return False
+
+
+def flatten_dict(d: dict[str, Any], parent_key: str = "", sep: str = "/") -> dict[str, Any]:
+    """Recursively flatten a nested dictionary into a single-level dictionary."""
+    items: list[tuple[str, Any]] = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
 
 
 def train_baseline(
@@ -349,10 +391,35 @@ def train(fast_dev_run: bool | None = None) -> None:
     )
 
     # 4. Initialize MLFlow Logger and custom Metric Tracker
-    mlflow_logger = MLFlowLogger(
-        experiment_name="CycleGAN_Monet",
-        save_dir="./mlruns",
-    )
+    tracking_uri = cfg.logging.tracking_uri
+    if is_mlflow_server_running(tracking_uri):
+        print(f"MLflow server detected at {tracking_uri}. Logging to tracking server.")
+        mlflow_logger = MLFlowLogger(
+            experiment_name=cfg.logging.experiment_name,
+            save_dir=cfg.logging.save_dir,
+            tracking_uri=tracking_uri,
+        )
+    else:
+        print(
+            f"MLflow server at {tracking_uri} is not reachable. "
+            "Falling back to local file logging under ./mlruns"
+        )
+        mlflow_logger = MLFlowLogger(
+            experiment_name=cfg.logging.experiment_name,
+            save_dir=cfg.logging.save_dir,
+        )
+
+    # Log entire Hydra configuration and Git commit hash to MLflow
+    from omegaconf import OmegaConf
+
+    raw_cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    if isinstance(raw_cfg_dict, dict):
+
+        cfg_dict: dict[str, Any] = {str(k): v for k, v in raw_cfg_dict.items()}
+        flat_hparams = flatten_dict(cfg_dict)
+        flat_hparams["git_commit"] = get_git_commit_id()
+        mlflow_logger.log_hyperparams(flat_hparams)
+
     metric_tracker = MetricTracker()
 
     # 5. Initialize Trainer
@@ -422,6 +489,27 @@ def train(fast_dev_run: bool | None = None) -> None:
         plt.savefig(val_plot_path, dpi=cfg.postprocessing.dpi, bbox_inches="tight")
         plt.close()
         print(f"Saved validation metrics plot to: {val_plot_path.absolute()}")
+
+    # Plot 3: Generator Loss Decomposition
+    plt.figure(figsize=fig_sz)
+    adv_loss = [m.get("total_adv_loss", 0.0) for m in epoch_metrics]
+    idt_loss = [m.get("total_idt_loss", 0.0) for m in epoch_metrics]
+    cycle_loss = [m.get("total_cycle_loss", 0.0) for m in epoch_metrics]
+
+    plt.plot(epochs, adv_loss, label="Adversarial Loss", color="royalblue", marker="o")
+    plt.plot(epochs, idt_loss, label="Identity Loss", color="crimson", marker="s")
+    plt.plot(epochs, cycle_loss, label="Cycle consistency Loss", color="forestgreen", marker="d")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss Component Value")
+    plt.title("CycleGAN Generator Loss Decomposition")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.6)
+
+    decomp_plot_path = plots_dir / "generator_loss_decomposition.png"
+    plt.savefig(decomp_plot_path, dpi=cfg.postprocessing.dpi, bbox_inches="tight")
+    plt.close()
+    print(f"Saved generator loss decomposition plot to: {decomp_plot_path.absolute()}")
 
     print("Post-training plotting hook completed successfully.")
 

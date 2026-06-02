@@ -3,4 +3,5 @@ defaults:
   - model: cyclegan
   - training: default
   - postprocessing: default
+  - logging: default
   - _self_
