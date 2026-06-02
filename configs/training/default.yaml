@@ -1,0 +1,5 @@
+epochs: 18
+decay_epochs: 18
+batch_size: 1
+learning_rate: 0.0002
+fast_dev_run: false

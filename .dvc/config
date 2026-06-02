@@ -1,5 +1,7 @@
 [core]
-    remote = localstorage
+    remote = data_remote
     autostage = true
-['remote "localstorage"']
-    url = D:\dvc-storage
+['remote "data_remote"']
+    url = gdrive://1KSikxsd6-jQgtdptGumpc79DSoIkN6iQ
+['remote "models_remote"']
+    url = ../dvc-storage-models

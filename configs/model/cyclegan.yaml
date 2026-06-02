@@ -1,0 +1,7 @@
+name: "cyclegan"
+gen_name: "unet"
+num_resblocks: 6
+hid_channels: 64
+lambda_idt: 0.5
+lambda_cycle: [10.0, 10.0]
+buffer_size: 100
