@@ -39,8 +39,8 @@ def main() -> None:
     print(f"Found {len(photo_images)} photos and {len(monet_images)} Monet paintings.")
 
     # 3. Standardize paths to use portable forward slashes
-    photo_images_str = [p.as_posix() for p in photo_images]
-    monet_images_str = [p.as_posix() for p in monet_images]
+    photo_images_str = [path_val.as_posix() for path_val in photo_images]
+    monet_images_str = [path_val.as_posix() for path_val in monet_images]
 
     # 4. Perform the exact split distributions:
     # Train: 5,000 photos, 250 Monet paintings
@@ -66,14 +66,14 @@ def main() -> None:
     test_monet = monet_images_str[300:300]  # empty list (0 paintings)
 
     # 5. Construct dataset records
-    train_records = [{"image_path": p, "domain": "photo"} for p in train_photos] + [
-        {"image_path": p, "domain": "monet"} for p in train_monet
+    train_records = [{"image_path": path_val, "domain": "photo"} for path_val in train_photos] + [
+        {"image_path": path_val, "domain": "monet"} for path_val in train_monet
     ]
-    val_records = [{"image_path": p, "domain": "photo"} for p in val_photos] + [
-        {"image_path": p, "domain": "monet"} for p in val_monet
+    val_records = [{"image_path": path_val, "domain": "photo"} for path_val in val_photos] + [
+        {"image_path": path_val, "domain": "monet"} for path_val in val_monet
     ]
-    test_records = [{"image_path": p, "domain": "photo"} for p in test_photos] + [
-        {"image_path": p, "domain": "monet"} for p in test_monet
+    test_records = [{"image_path": path_val, "domain": "photo"} for path_val in test_photos] + [
+        {"image_path": path_val, "domain": "monet"} for path_val in test_monet
     ]
 
     # 6. Save as CSVs using pandas

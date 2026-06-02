@@ -1,0 +1,5 @@
+outs:
+- md5: 3a5fbb8eaa95924cbe31d3747ea8d632
+  size: 2167243
+  hash: md5
+  path: baseline_decoder.pth

@@ -33,10 +33,10 @@ def calc_mean_std(feat: torch.Tensor, eps: float = 1e-5) -> tuple[torch.Tensor, 
     """
     size = feat.size()
     assert len(size) == 4, f"Expected 4D tensor, got shape {size}"
-    N, C = size[:2]
-    feat_var = feat.view(N, C, -1).var(dim=2) + eps
-    feat_std = feat_var.sqrt().view(N, C, 1, 1)
-    feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
+    batch_size, channels = size[:2]
+    feat_var = feat.view(batch_size, channels, -1).var(dim=2) + eps
+    feat_std = feat_var.sqrt().view(batch_size, channels, 1, 1)
+    feat_mean = feat.view(batch_size, channels, -1).mean(dim=2).view(batch_size, channels, 1, 1)
     return feat_mean, feat_std
 
 
@@ -93,12 +93,12 @@ class ConvNeXtEncoder(nn.Module):
         for param in self.parameters():
             param.requires_grad = False
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         """Extract intermediate features from the input tensor.
 
         Parameters
         ----------
-        x : torch.Tensor
+        input_tensor : torch.Tensor
             Normalized image tensor of shape ``(N, 3, H, W)``.
 
         Returns
@@ -106,14 +106,14 @@ class ConvNeXtEncoder(nn.Module):
         torch.Tensor
             Feature map tensor of shape ``(N, 192, H/8, W/8)``.
         """
-        return self.encoder(x)  # type: ignore[no-any-return]
+        return self.encoder(input_tensor)  # type: ignore[no-any-return]
 
-    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+    def normalize(self, input_tensor: torch.Tensor) -> torch.Tensor:
         """Map images from range ``[-1, 1]`` to ``[0, 1]`` and apply ImageNet normalization.
 
         Parameters
         ----------
-        x : torch.Tensor
+        input_tensor : torch.Tensor
             Image tensor of shape ``(N, 3, H, W)`` in range ``[-1, 1]``.
 
         Returns
@@ -122,13 +122,13 @@ class ConvNeXtEncoder(nn.Module):
             Normalized tensor in ImageNet space.
         """
         # Map [-1, 1] -> [0, 1]
-        x_scaled = (x + 1.0) / 2.0
+        input_tensor_scaled = (input_tensor + 1.0) / 2.0
 
         # Normalise using ImageNet statistics
-        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406], device=input_tensor.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=input_tensor.device).view(1, 3, 1, 1)
 
-        return (x_scaled - mean) / std
+        return (input_tensor_scaled - mean) / std
 
 
 class AdaINDecoder(nn.Module):
@@ -164,12 +164,12 @@ class AdaINDecoder(nn.Module):
             nn.Tanh(),  # Maps output values to [-1, 1] matching dataset scale
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
         """Decode stylized feature maps back to image space.
 
         Parameters
         ----------
-        x : torch.Tensor
+        features : torch.Tensor
             Bottleneck feature map of shape ``(N, 192, 32, 32)``.
 
         Returns
@@ -177,7 +177,7 @@ class AdaINDecoder(nn.Module):
         torch.Tensor
             Reconstructed image tensor of shape ``(N, 3, 256, 256)`` in range ``[-1, 1]``.
         """
-        return self.decoder(x)  # type: ignore[no-any-return]
+        return self.decoder(features)  # type: ignore[no-any-return]
 
 
 class AdaINStyleTransfer(nn.Module):
@@ -216,8 +216,8 @@ class AdaINStyleTransfer(nn.Module):
         style_feat = self.encoder(normalized_style)
 
         # Perform AdaIN transformation
-        t = adain(content_feat, style_feat)
+        stylized_features = adain(content_feat, style_feat)
 
         # Reconstruct image from stylized features
-        g_t = self.decoder(t)
-        return g_t  # type: ignore[no-any-return]
+        stylized_images = self.decoder(stylized_features)
+        return stylized_images  # type: ignore[no-any-return]

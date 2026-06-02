@@ -26,6 +26,7 @@ from __future__ import annotations
 import gc
 import time
 import warnings
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, cast
 
 import numpy as np
@@ -84,12 +85,12 @@ class InceptionV3FeatureExtractor(nn.Module):
         )
 
     @torch.no_grad()
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         """Extract pool_3 (2048-d) features.
 
         Parameters
         ----------
-        x : torch.Tensor
+        input_tensor : torch.Tensor
             Float32, shape ``(N, 3, H, W)``, values in ``[0, 1]``.
             H, W must be ≥ 75 (256 for Monet images).
 
@@ -98,8 +99,8 @@ class InceptionV3FeatureExtractor(nn.Module):
         torch.Tensor
             Shape ``(N, 2048)``.
         """
-        x = self.normalize(x)
-        out = self.model(x)
+        input_tensor = self.normalize(input_tensor)
+        out = self.model(input_tensor)
         # In training mode inception_v3 may return InceptionOutputs(logits, aux).
         # In eval mode (our case) it returns a plain tensor — guard anyway.
         if hasattr(out, "logits"):
@@ -154,10 +155,10 @@ def get_activations(
     np.ndarray
         Shape ``(N, 2048)``, float32.
     """
-    n = images.shape[0]
-    batch_size = min(batch_size, n)
-    n_batches = (n + batch_size - 1) // batch_size
-    pred = np.empty((n, INCEPTION_OUTPUT_DIM), dtype=np.float32)
+    num_images = images.shape[0]
+    batch_size = min(batch_size, num_images)
+    n_batches = (num_images + batch_size - 1) // batch_size
+    pred = np.empty((num_images, INCEPTION_OUTPUT_DIM), dtype=np.float32)
 
     itr = (
         tqdm(range(n_batches), desc="InceptionV3 features", unit="batch")
@@ -166,12 +167,12 @@ def get_activations(
     )
 
     for i in itr:
-        s, e = i * batch_size, min((i + 1) * batch_size, n)
-        t = _to_tensor(images[s:e], extractor.device)
+        start_idx, end_idx = i * batch_size, min((i + 1) * batch_size, num_images)
+        batch_tensor = _to_tensor(images[start_idx:end_idx], extractor.device)
         with torch.no_grad():
-            f = extractor(t)
-        pred[s:e] = f.cpu().numpy()
-        del t, f
+            batch_features = extractor(batch_tensor)
+        pred[start_idx:end_idx] = batch_features.cpu().numpy()
+        del batch_tensor, batch_features
         if extractor.device.type == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
@@ -203,8 +204,8 @@ def calculate_activation_statistics(
         Raw feature vectors retained for memorization distance computation.
     """
     features = get_activations(images, extractor, batch_size=batch_size, verbose=verbose)
-    mu = np.mean(features, axis=0)
-    sigma = np.cov(features, rowvar=False)
+    mu = np.mean(features, axis=0).astype(np.float32)
+    sigma = np.cov(features, rowvar=False).astype(np.float32)
     return mu, sigma, features
 
 
@@ -265,11 +266,10 @@ def calculate_frechet_distance(
 # ---------------------------------------------------------------------------
 
 
-def normalize_rows(x: NDArray[Any]) -> NDArray[np.float32]:
+def normalize_rows(input_matrix: NDArray[Any]) -> NDArray[np.float32]:
     """L2-normalise each row. Zero rows stay zero (no NaN produced)."""
-    return cast(
-        NDArray[np.float32], np.nan_to_num(x / np.linalg.norm(x, ord=2, axis=1, keepdims=True))
-    )
+    norm = np.linalg.norm(input_matrix, ord=2, axis=1, keepdims=True)
+    return cast(NDArray[np.float32], np.nan_to_num(input_matrix / norm))
 
 
 def cosine_distance(features1: NDArray[Any], features2: NDArray[Any]) -> float:
@@ -292,23 +292,23 @@ def cosine_distance(features1: NDArray[Any], features2: NDArray[Any]) -> float:
     f2 = features2[np.sum(features2, axis=1) != 0]
     nf1 = normalize_rows(f1)
     nf2 = normalize_rows(f2)
-    d = 1.0 - np.abs(np.matmul(nf1, nf2.T))  # (N, M) cosine distance matrix
-    return float(np.mean(np.min(d, axis=1)))
+    distances = 1.0 - np.abs(np.matmul(nf1, nf2.T))  # (N, M) cosine distance matrix
+    return float(np.mean(np.min(distances, axis=1)))
 
 
-def distance_thresholding(d: float, eps: float = COSINE_DISTANCE_EPS) -> float:
+def distance_thresholding(distance: float, eps: float = COSINE_DISTANCE_EPS) -> float:
     """Clamp memorization distance: values >= eps become 1.0 (no penalty).
 
     Parameters
     ----------
-    d : float  — raw cosine distance
+    distance : float  — raw cosine distance
     eps : float — threshold (default 0.1)
 
     Returns
     -------
     float
     """
-    return d if d < eps else 1.0
+    return distance if distance < eps else 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -450,14 +450,16 @@ def calculate_fid(
     return fid_val
 
 
-def calculate_l1_loss(x: torch.Tensor | NDArray[Any], y: torch.Tensor | NDArray[Any]) -> float:
+def calculate_l1_loss(
+    tensor_a: torch.Tensor | NDArray[Any], tensor_b: torch.Tensor | NDArray[Any]
+) -> float:
     """Calculate the L1 Loss (Mean Absolute Error) between two tensors or arrays.
 
     Parameters
     ----------
-    x : torch.Tensor or np.ndarray
+    tensor_a : torch.Tensor or np.ndarray
         First tensor/array.
-    y : torch.Tensor or np.ndarray
+    tensor_b : torch.Tensor or np.ndarray
         Second tensor/array.
 
     Returns
@@ -465,11 +467,11 @@ def calculate_l1_loss(x: torch.Tensor | NDArray[Any], y: torch.Tensor | NDArray[
     float
         L1 loss / mean absolute error.
     """
-    if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor):
-        return float(torch.mean(torch.abs(x - y)).item())
+    if isinstance(tensor_a, torch.Tensor) and isinstance(tensor_b, torch.Tensor):
+        return float(torch.mean(torch.abs(tensor_a - tensor_b)).item())
 
-    x_np = np.asarray(x, dtype=np.float32)
-    y_np = np.asarray(y, dtype=np.float32)
+    x_np = np.asarray(tensor_a, dtype=np.float32)
+    y_np = np.asarray(tensor_b, dtype=np.float32)
     return float(np.mean(np.abs(x_np - y_np)))
 
 
@@ -481,7 +483,7 @@ class measure_latency:
 
     Can be used as a context manager:
         with measure_latency() as tracker:
-            model(x)
+            model(input_tensor)
         print(tracker.latency_ms)
 
     Or as a decorator:
@@ -525,36 +527,37 @@ class measure_latency:
 # CLI helper
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import argparse
-    import pathlib
-
+def main(
+    generated_dir: str,
+    reference_dir: str,
+    batch_size: int = 32,
+    image_size: int = 256,
+    device: Optional[str] = None,
+) -> None:
+    """Compute MiFID between two image directories."""
     from PIL import Image
 
-    parser = argparse.ArgumentParser(description="Compute MiFID between two image directories.")
-    parser.add_argument("generated_dir", help="Generated images directory.")
-    parser.add_argument("reference_dir", help="Reference images directory.")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--device", default=None)
-    args = parser.parse_args()
-
-    def _load(d: str, sz: int) -> NDArray[np.uint8]:
-        p = pathlib.Path(d)
-        files = sorted(p.glob("*.jpg")) + sorted(p.glob("*.png"))
-        return np.stack(
-            [
-                np.array(Image.open(f).convert("RGB").resize((sz, sz), Image.Resampling.LANCZOS))
-                for f in files
-            ]
-        )
+    def _load(directory_path: str, size: int) -> NDArray[np.uint8]:
+        path_obj = Path(directory_path)
+        files = sorted(path_obj.glob("*.jpg")) + sorted(path_obj.glob("*.png"))
+        loaded_images = []
+        for file_path in files:
+            img = Image.open(file_path).convert("RGB")
+            resized_img = img.resize((size, size), Image.Resampling.LANCZOS)
+            loaded_images.append(np.array(resized_img))
+        return np.stack(loaded_images)
 
     res = calculate_mifid(
-        _load(args.generated_dir, args.image_size),
-        _load(args.reference_dir, args.image_size),
-        batch_size=args.batch_size,
-        device=args.device,
+        _load(generated_dir, image_size),
+        _load(reference_dir, image_size),
+        batch_size=batch_size,
+        device=device,
     )
     print("\n=== MiFID Results ===")
-    for k, v in res.items():
-        print(f"  {k:25s}: {v:.6f}")
+    for key, val in res.items():
+        print(f"  {key:25s}: {val:.6f}")
+
+
+if __name__ == "__main__":
+    import fire
+    fire.Fire(main)

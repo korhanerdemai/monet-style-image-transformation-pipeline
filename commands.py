@@ -97,15 +97,17 @@ def is_mlflow_server_running(tracking_uri: str) -> bool:
         return False
 
 
-def flatten_dict(d: dict[str, Any], parent_key: str = "", sep: str = "/") -> dict[str, Any]:
+def flatten_dict(
+    target_dict: dict[str, Any], parent_key: str = "", sep: str = "/"
+) -> dict[str, Any]:
     """Recursively flatten a nested dictionary into a single-level dictionary."""
     items: list[tuple[str, Any]] = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(flatten_dict(v, new_key, sep=sep).items())
+    for key, val in target_dict.items():
+        new_key = f"{parent_key}{sep}{key}" if parent_key else key
+        if isinstance(val, dict):
+            items.extend(flatten_dict(val, new_key, sep=sep).items())
         else:
-            items.append((new_key, v))
+            items.append((new_key, val))
     return dict(items)
 
 
@@ -204,33 +206,35 @@ def train_baseline(
             style_feat = model.encoder(norm_style)
 
             # Bottleneck representation
-            t = adain(content_feat, style_feat)
+            stylized_features = adain(content_feat, style_feat)
 
             # Reconstruct image
-            g_t = model.decoder(t)
+            stylized_images = model.decoder(stylized_features)
 
             # Extract features of generated image
-            g_t_feat = model.encoder(model.encoder.normalize(g_t))
+            stylized_features_extracted = model.encoder(model.encoder.normalize(stylized_images))
 
             # Compute losses
-            loss, c_loss, s_loss = criterion(g_t_feat, t, style_feat)
+            loss, content_loss, style_loss = criterion(
+                stylized_features_extracted, stylized_features, style_feat
+            )
 
             # Backpropagation
             loss.backward()
             optimizer.step()
 
             # Metrics
-            n = content_images.size(0)
-            running_loss += loss.item() * n
-            running_content += c_loss.item() * n
-            running_style += s_loss.item() * n
-            count += n
+            batch_len = content_images.size(0)
+            running_loss += loss.item() * batch_len
+            running_content += content_loss.item() * batch_len
+            running_style += style_loss.item() * batch_len
+            count += batch_len
 
             if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
                 print(
                     f"Epoch [{epoch+1}/{epochs}] | Batch [{batch_idx+1}/{len(train_loader)}] | "
-                    f"Loss: {loss.item():.4f} (Content: {c_loss.item():.4f}, "
-                    f"Style: {s_loss.item():.4f})"
+                    f"Loss: {loss.item():.4f} (Content: {content_loss.item():.4f}, "
+                    f"Style: {style_loss.item():.4f})"
                 )
 
         epoch_loss = running_loss / count
@@ -445,14 +449,14 @@ def train(fast_dev_run: bool | None = None) -> None:
         print("Warning: No metrics recorded. Plots will not be generated.")
         return
 
-    epochs = [m.get("epoch", i + 1) for i, m in enumerate(epoch_metrics)]
+    epochs = [metric_entry.get("epoch", idx + 1) for idx, metric_entry in enumerate(epoch_metrics)]
 
     # Plot 1: Training losses
     fig_sz = tuple(cfg.postprocessing.fig_size)
     plt.figure(figsize=fig_sz)
-    gen_loss = [m.get("gen_loss", 0.0) for m in epoch_metrics]
-    disc_m = [m.get("disc_loss_M", 0.0) for m in epoch_metrics]
-    disc_p = [m.get("disc_loss_P", 0.0) for m in epoch_metrics]
+    gen_loss = [metric_entry.get("gen_loss", 0.0) for metric_entry in epoch_metrics]
+    disc_m = [metric_entry.get("disc_loss_M", 0.0) for metric_entry in epoch_metrics]
+    disc_p = [metric_entry.get("disc_loss_P", 0.0) for metric_entry in epoch_metrics]
 
     plt.plot(epochs, gen_loss, label="Generator Loss", color="royalblue", marker="o")
     plt.plot(epochs, disc_m, label="Discriminator M Loss", color="darkorange", marker="s")
@@ -470,14 +474,30 @@ def train(fast_dev_run: bool | None = None) -> None:
     print(f"Saved training loss plot to: {loss_plot_path.absolute()}")
 
     # Plot 2: Validation metrics
-    val_epochs = [m["epoch"] for m in epoch_metrics if "val_cycle_loss_P" in m]
-    val_cycle = [m["val_cycle_loss_P"] for m in epoch_metrics if "val_cycle_loss_P" in m]
-    val_gen = [m["val_gen_loss_P"] for m in epoch_metrics if "val_gen_loss_P" in m]
+    val_epochs = [
+        metric_entry["epoch"]
+        for metric_entry in epoch_metrics
+        if "val_cycle_loss_P" in metric_entry
+    ]
+    val_cycle = [
+        metric_entry["val_cycle_loss_P"]
+        for metric_entry in epoch_metrics
+        if "val_cycle_loss_P" in metric_entry
+    ]
+    val_gen = [
+        metric_entry["val_gen_loss_P"]
+        for metric_entry in epoch_metrics
+        if "val_gen_loss_P" in metric_entry
+    ]
 
     if val_cycle:
         plt.figure(figsize=fig_sz)
-        plt.plot(val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x")
-        plt.plot(val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^")
+        plt.plot(
+            val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x"
+        )
+        plt.plot(
+            val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^"
+        )
 
         plt.xlabel("Epoch")
         plt.ylabel("Metric Value")
@@ -492,9 +512,9 @@ def train(fast_dev_run: bool | None = None) -> None:
 
     # Plot 3: Generator Loss Decomposition
     plt.figure(figsize=fig_sz)
-    adv_loss = [m.get("total_adv_loss", 0.0) for m in epoch_metrics]
-    idt_loss = [m.get("total_idt_loss", 0.0) for m in epoch_metrics]
-    cycle_loss = [m.get("total_cycle_loss", 0.0) for m in epoch_metrics]
+    adv_loss = [metric_entry.get("total_adv_loss", 0.0) for metric_entry in epoch_metrics]
+    idt_loss = [metric_entry.get("total_idt_loss", 0.0) for metric_entry in epoch_metrics]
+    cycle_loss = [metric_entry.get("total_cycle_loss", 0.0) for metric_entry in epoch_metrics]
 
     plt.plot(epochs, adv_loss, label="Adversarial Loss", color="royalblue", marker="o")
     plt.plot(epochs, idt_loss, label="Identity Loss", color="crimson", marker="s")

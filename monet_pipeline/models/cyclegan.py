@@ -68,8 +68,8 @@ class Downsampling(nn.Module):
                 modules_list.append(nn.ReLU(inplace=True))
         self.block = nn.Sequential(*modules_list)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.block(x))
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.block(input_tensor))
 
 
 class Upsampling(nn.Module):
@@ -121,8 +121,8 @@ class Upsampling(nn.Module):
         modules_list.append(nn.ReLU(inplace=True))
         self.block = nn.Sequential(*modules_list)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.block(x))
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.block(input_tensor))
 
 
 class ResBlock(nn.Module):
@@ -161,8 +161,8 @@ class ResBlock(nn.Module):
             ),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, x + self.block(x))
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, input_tensor + self.block(input_tensor))
 
 
 class UNetGenerator(nn.Module):
@@ -208,18 +208,19 @@ class UNetGenerator(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         skips = []
+        features = input_tensor
         for down in self.downsampling_path:
-            x = down(x)
-            skips.append(x)
+            features = down(features)
+            skips.append(features)
 
         skips_rev = list(reversed(skips[:-1]))
 
         for up, skip in zip(self.upsampling_path, skips_rev):
-            x = up(x)
-            x = torch.cat([x, skip], dim=1)
-        return cast(torch.Tensor, self.feature_block(x))
+            features = up(features)
+            features = torch.cat([features, skip], dim=1)
+        return cast(torch.Tensor, self.feature_block(features))
 
 
 class ResNetGenerator(nn.Module):
@@ -265,8 +266,8 @@ class ResNetGenerator(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.model(x))
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.model(input_tensor))
 
 
 def get_gen(
@@ -320,8 +321,8 @@ class Discriminator(nn.Module):
             nn.Conv2d(hid_channels * 8, 1, kernel_size=4, padding=1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.block(x))
+    def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.block(input_tensor))
 
 
 class ImageBuffer:
@@ -344,8 +345,8 @@ class ImageBuffer:
                 self.buffer.append(img)
                 return_imgs.append(img)
             else:
-                p = float(np.random.uniform(low=0.0, high=1.0))
-                if p > 0.5:
+                probability = float(np.random.uniform(low=0.0, high=1.0))
+                if probability > 0.5:
                     idx = int(np.random.randint(low=0, high=self.buffer_size))
                     tmp = self.buffer[idx].clone()
                     self.buffer[idx] = img
@@ -406,11 +407,11 @@ class CycleGAN(L.LightningModule):
     def init_weights(self) -> None:
         """Initialise weights with normal distribution."""
 
-        def init_fn(m: nn.Module) -> None:
-            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.InstanceNorm2d)):
-                nn.init.normal_(m.weight, 0.0, 0.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+        def init_fn(module: nn.Module) -> None:
+            if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d, nn.InstanceNorm2d)):
+                nn.init.normal_(module.weight, 0.0, 0.02)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
 
         for net in [self.gen_PM, self.gen_MP, self.disc_M, self.disc_P]:
             net.apply(init_fn)
@@ -452,11 +453,11 @@ class CycleGAN(L.LightningModule):
         schedulers = [self.get_lr_scheduler(opt) for opt in optimizers]
         return optimizers, schedulers
 
-    def adv_criterion(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return F.mse_loss(y_hat, y)
+    def adv_criterion(self, y_hat: torch.Tensor, target_tensor: torch.Tensor) -> torch.Tensor:
+        return F.mse_loss(y_hat, target_tensor)
 
-    def recon_criterion(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return F.l1_loss(y_hat, y)
+    def recon_criterion(self, y_hat: torch.Tensor, target_tensor: torch.Tensor) -> torch.Tensor:
+        return F.l1_loss(y_hat, target_tensor)
 
     def get_adv_loss(self, fake: torch.Tensor, disc: nn.Module) -> torch.Tensor:
         fake_hat = disc(fake)
@@ -593,9 +594,9 @@ class CycleGAN(L.LightningModule):
             "disc_loss_M": disc_loss_M,
             "disc_loss_P": disc_loss_P,
             **{
-                k: torch.tensor(v, device=self.device)
-                for k, v in gen_loss_dict.items()
-                if k != "gen_loss"
+                key: torch.tensor(val, device=self.device)
+                for key, val in gen_loss_dict.items()
+                if key != "gen_loss"
             },
         }
         self.log_dict(metrics, on_step=False, on_epoch=True, prog_bar=True)
@@ -634,7 +635,7 @@ class CycleGAN(L.LightningModule):
         # Print progress in pure ASCII to avoid terminal encoding errors
         print(
             f"Epoch {self.current_epoch + 1} - "
-            + " - ".join(f"{k}: {v:.5f}" for k, v in logged_values.items())
+            + " - ".join(f"{key}: {val:.5f}" for key, val in logged_values.items())
         )
 
     def on_train_end(self) -> None:

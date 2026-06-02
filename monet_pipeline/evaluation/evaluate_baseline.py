@@ -9,11 +9,10 @@ and exports all results to metrics/baseline_metrics.json.
 
 from __future__ import annotations
 
-import argparse
 import json
 import random
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -39,7 +38,7 @@ def _tensor_to_numpy_uint8(tensor: torch.Tensor) -> NDArray[np.uint8]:
     # Scale from [-1, 1] -> [0, 1]
     tensor = (tensor + 1.0) / 2.0
     arr = tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    return (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+    return cast(NDArray[np.uint8], (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8))
 
 
 def evaluate_baseline(
@@ -107,14 +106,20 @@ def evaluate_baseline(
         raise FileNotFoundError(f"Test set manifest CSV not found at {test_manifest_path}")
 
     test_df = pd.read_csv(test_manifest_path)
-    photo_files = [Path(p) for p in test_df[test_df["domain"] == "photo"]["image_path"].tolist()]
+    photo_files = [
+        Path(photo_path)
+        for photo_path in test_df[test_df["domain"] == "photo"]["image_path"].tolist()
+    ]
 
     val_manifest_path = Path(val_manifest_path)
     if not val_manifest_path.exists():
         raise FileNotFoundError(f"Validation set manifest CSV not found at {val_manifest_path}")
 
     val_df = pd.read_csv(val_manifest_path)
-    monet_files = [Path(p) for p in val_df[val_df["domain"] == "monet"]["image_path"].tolist()]
+    monet_files = [
+        Path(monet_path)
+        for monet_path in val_df[val_df["domain"] == "monet"]["image_path"].tolist()
+    ]
 
     print(
         f"[Dataset] Found {len(monet_files)} Monet paintings in validation, "
@@ -229,8 +234,8 @@ def evaluate_baseline(
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w") as fp:
-        json.dump(full_results, fp, indent=2)
+    with out_path.open("w") as metrics_file:
+        json.dump(full_results, metrics_file, indent=2)
 
     # 7. Print Summary
     print(f"\n{'='*60}")
@@ -250,68 +255,6 @@ def evaluate_baseline(
     return full_results
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Evaluate the AdaIN baseline and compute metrics.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--test_manifest",
-        default="data/processed/test_manifest.csv",
-        help="Path to the test set manifest CSV file.",
-    )
-    parser.add_argument(
-        "--val_manifest",
-        default="data/processed/val_manifest.csv",
-        help="Path to the validation set manifest CSV file containing references.",
-    )
-    parser.add_argument(
-        "--weights_path",
-        default="models/baseline_decoder.pth",
-        help="Path to the trained baseline decoder weights (.pth).",
-    )
-    parser.add_argument(
-        "--n_photos",
-        type=int,
-        default=None,
-        help="Number of photos to stylize and evaluate. (None evaluates all in manifest).",
-    )
-    parser.add_argument(
-        "--batch_size", type=int, default=16, help="InceptionV3 batch size for FID/MiFID."
-    )
-    parser.add_argument(
-        "--image_size", type=int, default=256, help="Spatial resolution for all images."
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Torch device ('cuda' or 'cpu'). Auto-detected if not set.",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducible photo sampling."
-    )
-    parser.add_argument(
-        "--output",
-        default="metrics/baseline_metrics.json",
-        help="Path to write the JSON results file.",
-    )
-    parser.add_argument(
-        "--quiet", action="store_true", help="Suppress verbose InceptionV3 progress output."
-    )
-    return parser.parse_args()
-
-
 if __name__ == "__main__":
-    args = _parse_args()
-    evaluate_baseline(
-        test_manifest_path=args.test_manifest,
-        val_manifest_path=args.val_manifest,
-        weights_path=args.weights_path,
-        n_photos=args.n_photos,
-        batch_size=args.batch_size,
-        image_size=args.image_size,
-        device=args.device,
-        seed=args.seed,
-        output_path=args.output,
-        verbose=not args.quiet,
-    )
+    import fire
+    fire.Fire(evaluate_baseline)
