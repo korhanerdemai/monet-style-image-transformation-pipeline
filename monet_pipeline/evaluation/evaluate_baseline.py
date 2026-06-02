@@ -42,8 +42,8 @@ def _tensor_to_numpy_uint8(tensor: torch.Tensor) -> NDArray[np.uint8]:
 
 
 def evaluate_baseline(
-    test_manifest_path: str | Path = "data/processed/test_manifest.csv",
-    val_manifest_path: str | Path = "data/processed/val_manifest.csv",
+    test_manifest_path: str | Path = "data/raw/monet_dataset/test_manifest.csv",
+    val_manifest_path: str | Path = "data/raw/monet_dataset/val_manifest.csv",
     weights_path: str | Path = "models/baseline_decoder.pth",
     n_photos: Optional[int] = None,
     batch_size: int = 16,

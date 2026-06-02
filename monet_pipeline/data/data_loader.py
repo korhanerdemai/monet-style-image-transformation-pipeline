@@ -202,13 +202,13 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
     ----------
     train_manifest : str or Path
         Path to the training CSV manifest file.
-        Default: ``"data/processed/train_manifest.csv"``.
+        Default: ``"data/raw/monet_dataset/train_manifest.csv"``.
     val_manifest : str or Path
         Path to the validation CSV manifest file.
-        Default: ``"data/processed/val_manifest.csv"``.
+        Default: ``"data/raw/monet_dataset/val_manifest.csv"``.
     test_manifest : str or Path
         Path to the test CSV manifest file.
-        Default: ``"data/processed/test_manifest.csv"``.
+        Default: ``"data/raw/monet_dataset/test_manifest.csv"``.
     batch_size : int
         Number of images per training batch. Default: 1.
     sample_size : int
@@ -226,9 +226,9 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     def __init__(
         self,
-        train_manifest: str | Path = "data/processed/train_manifest.csv",
-        val_manifest: str | Path = "data/processed/val_manifest.csv",
-        test_manifest: str | Path = "data/processed/test_manifest.csv",
+        train_manifest: str | Path = "data/raw/monet_dataset/train_manifest.csv",
+        val_manifest: str | Path = "data/raw/monet_dataset/val_manifest.csv",
+        test_manifest: str | Path = "data/raw/monet_dataset/test_manifest.csv",
         batch_size: int = DEFAULT_BATCH_SIZE,
         sample_size: int = DEFAULT_SAMPLE_SIZE,
         load_dim: int = DEFAULT_LOAD_DIM,
