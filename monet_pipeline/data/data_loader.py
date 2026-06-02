@@ -226,9 +226,9 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     def __init__(
         self,
-        train_manifest: str | Path = "data/raw/monet_dataset/train_manifest.csv",
-        val_manifest: str | Path = "data/raw/monet_dataset/val_manifest.csv",
-        test_manifest: str | Path = "data/raw/monet_dataset/test_manifest.csv",
+        train_manifest: str | Path | None = None,
+        val_manifest: str | Path | None = None,
+        test_manifest: str | Path | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         sample_size: int = DEFAULT_SAMPLE_SIZE,
         load_dim: int = DEFAULT_LOAD_DIM,
@@ -239,6 +239,27 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         _require_lightning()
         super().__init__()
 
+        # Fallback logic: check data/processed first, then default to data/raw/monet_dataset
+        if train_manifest is None:
+            processed = Path("data/processed/train_manifest.csv")
+            train_manifest = (
+                processed
+                if processed.exists()
+                else Path("data/raw/monet_dataset/train_manifest.csv")
+            )
+        if val_manifest is None:
+            processed = Path("data/processed/val_manifest.csv")
+            val_manifest = (
+                processed if processed.exists() else Path("data/raw/monet_dataset/val_manifest.csv")
+            )
+        if test_manifest is None:
+            processed = Path("data/processed/test_manifest.csv")
+            test_manifest = (
+                processed
+                if processed.exists()
+                else Path("data/raw/monet_dataset/test_manifest.csv")
+            )
+
         self.train_manifest = train_manifest
         self.val_manifest = val_manifest
         self.test_manifest = test_manifest
@@ -247,10 +268,8 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
         self.transform = CustomTransform(load_dim=load_dim, target_dim=target_dim)
 
-        self._loader_config: dict[str, Any] = {
-            "num_workers": num_workers if num_workers is not None else (os.cpu_count() or 0),
-            "pin_memory": pin_memory if pin_memory is not None else torch.cuda.is_available(),
-        }
+        self.num_workers = num_workers if num_workers is not None else (os.cpu_count() or 0)
+        self.pin_memory = pin_memory if pin_memory is not None else torch.cuda.is_available()
 
     # ------------------------------------------------------------------
     # Setup
@@ -300,14 +319,22 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
 
     def train_dataloader(self) -> "CombinedLoader":
         """Return a CombinedLoader cycling over both Monet and photo batches."""
-        loader_cfg = {
-            "shuffle": True,
-            "drop_last": True,
-            "batch_size": self.batch_size,
-            **self._loader_config,
-        }
-        loader_monet = DataLoader(self.train_monet, **loader_cfg)
-        loader_photo = DataLoader(self.train_photo, **loader_cfg)
+        loader_monet = DataLoader(
+            self.train_monet,
+            batch_size=self.batch_size,
+            shuffle=True,
+            drop_last=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+        loader_photo = DataLoader(
+            self.train_photo,
+            batch_size=self.batch_size,
+            shuffle=True,
+            drop_last=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
         return CombinedLoader({"monet": loader_monet, "photo": loader_photo}, mode="max_size_cycle")
 
     def val_dataloader(self) -> DataLoader[torch.Tensor]:
@@ -315,7 +342,8 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         return DataLoader(
             self.valid_photo,
             batch_size=self.sample_size,
-            **self._loader_config,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
 
     def test_dataloader(self) -> DataLoader[torch.Tensor]:
@@ -326,7 +354,8 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         return DataLoader(
             dataset,
             batch_size=self.sample_size,
-            **self._loader_config,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
 
     def predict_dataloader(self) -> DataLoader[torch.Tensor]:
@@ -337,7 +366,8 @@ class CycleGANDataModule(L.LightningDataModule if _LIGHTNING_AVAILABLE else obje
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
-            **self._loader_config,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
 
     # ------------------------------------------------------------------

@@ -220,6 +220,7 @@ __marimo__/
 # Custom rules
 *.docx
 data/
+!data/**/*.dvc
 /*.png
 /*.jpg
 /*.jpeg

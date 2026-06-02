@@ -527,6 +527,7 @@ class measure_latency:
 # CLI helper
 # ---------------------------------------------------------------------------
 
+
 def main(
     generated_dir: str,
     reference_dir: str,
@@ -560,4 +561,5 @@ def main(
 
 if __name__ == "__main__":
     import fire
+
     fire.Fire(main)

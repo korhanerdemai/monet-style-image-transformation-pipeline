@@ -2,6 +2,6 @@
     remote = data_remote
     autostage = true
 ['remote "data_remote"']
-    url = gdrive://1KSikxsd6-jQgtdptGumpc79DSoIkN6iQ
+    url = https://huggingface.co/datasets/korhanerdem/monet-style-image-transformation-pipeline-dvc/resolve/main/
 ['remote "models_remote"']
     url = ../dvc-storage-models

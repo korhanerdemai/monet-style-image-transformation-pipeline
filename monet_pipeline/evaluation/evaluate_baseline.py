@@ -257,4 +257,5 @@ def evaluate_baseline(
 
 if __name__ == "__main__":
     import fire
+
     fire.Fire(evaluate_baseline)
