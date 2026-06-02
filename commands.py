@@ -48,8 +48,8 @@ def pull_data_dvc() -> None:
         from dvc.repo import Repo
 
         repo = Repo()
-        print("Running dvc.repo.Repo().pull() to download dataset...")
-        repo.pull()
+        print("Running dvc.repo.Repo().pull() targeting dataset...")
+        repo.pull(targets=["data/raw/monet_dataset.dvc"])
         print("DVC Python API pull completed successfully.")
     except Exception as e:
         print(f"DVC Python API pull encountered an issue: {e}")
@@ -57,7 +57,7 @@ def pull_data_dvc() -> None:
         import subprocess
 
         try:
-            subprocess.run(["dvc", "pull"], check=True)
+            subprocess.run(["dvc", "pull", "data/raw/monet_dataset.dvc"], check=True)
             print("DVC CLI fallback pull completed successfully.")
         except Exception as cli_err:
             print(f"DVC CLI fallback failed: {cli_err}")
@@ -492,12 +492,8 @@ def train(fast_dev_run: bool | None = None) -> None:
 
     if val_cycle:
         plt.figure(figsize=fig_sz)
-        plt.plot(
-            val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x"
-        )
-        plt.plot(
-            val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^"
-        )
+        plt.plot(val_epochs, val_cycle, label="Val Cycle Loss (Photo)", color="crimson", marker="x")
+        plt.plot(val_epochs, val_gen, label="Val Gen Loss (Photo)", color="purple", marker="^")
 
         plt.xlabel("Epoch")
         plt.ylabel("Metric Value")
