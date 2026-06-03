@@ -42,14 +42,15 @@ class MetricTracker(L.Callback):
 
 
 def pull_data_dvc() -> None:
-    """Pull the dataset using the DVC Python API (or CLI fallback)."""
+    """Pull the dataset using the DVC Python API (or CLI fallback) and extract if necessary."""
     print("Checking dataset availability and initiating DVC pull...")
+    target_dvc = "data/raw/monet_dataset.tar.gz.dvc"
     try:
         from dvc.repo import Repo
 
         repo = Repo()
-        print("Running dvc.repo.Repo().pull() targeting dataset...")
-        repo.pull(targets=["data/raw/monet_dataset.dvc"])
+        print(f"Running dvc.repo.Repo().pull() targeting {target_dvc}...")
+        repo.pull(targets=[target_dvc])
         print("DVC Python API pull completed successfully.")
     except Exception as e:
         print(f"DVC Python API pull encountered an issue: {e}")
@@ -57,7 +58,7 @@ def pull_data_dvc() -> None:
         import subprocess
 
         try:
-            subprocess.run(["dvc", "pull", "data/raw/monet_dataset.dvc"], check=True)
+            subprocess.run(["dvc", "pull", target_dvc], check=True)
             print("DVC CLI fallback pull completed successfully.")
         except Exception as cli_err:
             print(f"DVC CLI fallback failed: {cli_err}")
@@ -65,6 +66,38 @@ def pull_data_dvc() -> None:
                 "Please ensure your DVC storage is configured and "
                 "you have the required access permissions."
             )
+            return
+
+    # Auto-extraction logic
+    import os
+    import tarfile
+    from pathlib import Path
+
+    archive_path = Path("data/raw/monet_dataset.tar.gz")
+    extract_path = Path("data/raw")
+    target_dir = extract_path / "monet_dataset"
+
+    if not archive_path.exists():
+        print(f"Warning: Dataset archive {archive_path} not found after DVC pull.")
+        return
+
+    # Check if we need to extract (if target doesn't exist or archive is newer)
+    need_extract = True
+    if target_dir.exists():
+        if archive_path.stat().st_mtime <= target_dir.stat().st_mtime:
+            need_extract = False
+            print("Dataset directory is up to date. Skipping extraction.")
+
+    if need_extract:
+        print(f"Extracting {archive_path}...")
+        try:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=extract_path)
+            # Update directory mtime to ensure it's newer than the archive
+            os.utime(target_dir, None)
+            print("Extraction completed successfully.")
+        except Exception as e:
+            print(f"Failed to extract dataset: {e}")
 
 
 def get_git_commit_id() -> str:

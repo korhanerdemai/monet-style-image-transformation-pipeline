@@ -1,0 +1,5 @@
+outs:
+- md5: cf9988a484a25109341595675e1d4425
+  size: 98931098
+  hash: md5
+  path: monet_dataset.tar.gz

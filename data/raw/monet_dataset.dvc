@@ -1,6 +1,0 @@
-outs:
-- md5: 334e365b1afb69e8a53048a3b18f1294.dir
-  size: 386270046
-  nfiles: 7366
-  hash: md5
-  path: monet_dataset
