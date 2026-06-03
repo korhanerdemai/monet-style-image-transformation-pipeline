@@ -441,25 +441,36 @@ def train(fast_dev_run: bool | None = None) -> None:
             f"MLflow server at {tracking_uri} is not reachable. "
             "Auto-starting MLflow UI in the background..."
         )
-        import subprocess
-        import time
-        import sys
         import os
+        import subprocess
+        import sys
+        import time
         from urllib.parse import urlparse
-        
+
         parsed = urlparse(tracking_uri)
         host = parsed.hostname or "127.0.0.1"
         port = str(parsed.port) or "8080"
-        
+
         # Must be set before starting the UI so it inherits the env var
         os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-        
+
         subprocess.Popen(
-            [sys.executable, "-m", "mlflow", "ui", "--host", host, "--port", port, "--backend-store-uri", cfg.logging.save_dir],
+            [
+                sys.executable,
+                "-m",
+                "mlflow",
+                "ui",
+                "--host",
+                host,
+                "--port",
+                port,
+                "--backend-store-uri",
+                cfg.logging.save_dir,
+            ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
         )
-        
+
         for _ in range(10):
             if is_mlflow_server_running(tracking_uri):
                 print(f"Successfully started MLflow UI at {tracking_uri}")

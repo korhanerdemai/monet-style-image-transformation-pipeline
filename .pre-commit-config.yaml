@@ -29,7 +29,8 @@ repos:
     hooks:
       - id: mypy
         name: mypy
-        entry: mypy
+        entry: mypy monet_pipeline/ commands.py
         language: system
         types: [python]
         files: ^monet_pipeline/|^commands.py
+        pass_filenames: false

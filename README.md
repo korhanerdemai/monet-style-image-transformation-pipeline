@@ -137,14 +137,14 @@ Follow these steps to configure your local development environment:
     uv sync
     ```
 
-4.  **Pull Data via DVC:**
-    To download the raw images and the pre-split manifest CSV files from the public remote:
+4.  **Pull Data via DVC (Optional):**
+    The dataset is automatically downloaded and extracted for you the first time you run any training or inference command. However, if you'd like to manually download the raw images and pre-split manifest CSV files upfront:
 
     ```bash
     uv run dvc pull
     ```
 
-    Once pulled successfully, the extracted dataset structure under `data/raw/` will be structured as follows:
+    Once the dataset is pulled and automatically extracted, the directory structure under `data/raw/` will be structured as follows:
 
     ```
     data/raw/monet_dataset/
