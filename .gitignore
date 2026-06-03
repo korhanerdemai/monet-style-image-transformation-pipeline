@@ -219,8 +219,6 @@ __marimo__/
 
 # Custom rules
 *.docx
-data/
-!data/**/*.dvc
 /*.png
 /*.jpg
 /*.jpeg
@@ -229,6 +227,8 @@ data/
 /*.bmp
 *.json
 *.ipynb
+models/
+!models/.gitkeep
 
 # MLFlow
 mlruns/
