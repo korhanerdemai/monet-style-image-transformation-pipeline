@@ -408,6 +408,8 @@ def train(fast_dev_run: bool | None = None) -> None:
             f"MLflow server at {tracking_uri} is not reachable. "
             "Falling back to local file logging under ./mlruns"
         )
+        import os
+        os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
         mlflow_logger = MLFlowLogger(
             experiment_name=cfg.logging.experiment_name,
             save_dir=cfg.logging.save_dir,
