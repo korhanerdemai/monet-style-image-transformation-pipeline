@@ -2,7 +2,7 @@
     remote = data_remote
     autostage = true
 ['remote "data_remote"']
-    url = https://huggingface.co/datasets/korhanerdem/monet-style-image-transformation-pipeline-dvc-v2/raw/main/
+    url = https://huggingface.co/datasets/korhanerdem/monet-style-image-transformation-pipeline-dvc-v2/resolve/main/
     jobs = 4
 ['remote "models_remote"']
     url = ../dvc-storage-models
