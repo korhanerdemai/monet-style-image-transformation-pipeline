@@ -406,13 +406,39 @@ def train(fast_dev_run: bool | None = None) -> None:
     else:
         print(
             f"MLflow server at {tracking_uri} is not reachable. "
-            "Falling back to local file logging under ./mlruns"
+            "Auto-starting MLflow UI in the background..."
         )
+        import subprocess
+        import time
+        import sys
         import os
+        from urllib.parse import urlparse
+        
+        parsed = urlparse(tracking_uri)
+        host = parsed.hostname or "127.0.0.1"
+        port = str(parsed.port) or "8080"
+        
+        # Must be set before starting the UI so it inherits the env var
         os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+        
+        subprocess.Popen(
+            [sys.executable, "-m", "mlflow", "ui", "--host", host, "--port", port, "--backend-store-uri", cfg.logging.save_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        
+        for _ in range(10):
+            if is_mlflow_server_running(tracking_uri):
+                print(f"Successfully started MLflow UI at {tracking_uri}")
+                break
+            time.sleep(1.0)
+        else:
+            print(f"Warning: MLflow UI failed to start in time at {tracking_uri}")
+
         mlflow_logger = MLFlowLogger(
             experiment_name=cfg.logging.experiment_name,
             save_dir=cfg.logging.save_dir,
+            tracking_uri=tracking_uri,
         )
 
     # Log entire Hydra configuration and Git commit hash to MLflow
